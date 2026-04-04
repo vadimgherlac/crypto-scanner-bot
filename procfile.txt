@@ -1,1 +1,0 @@
-worker: python scanner_bot.py

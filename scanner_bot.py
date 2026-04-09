@@ -39,11 +39,30 @@ bybit = HTTP(
 # =========================================================
 # SETTINGS
 # =========================================================
-CHECK_EVERY_SECONDS = 120
-SIGNALS_FILE = "trade_signals_v10.csv"
-STATS_FILE = "trade_stats_v10.csv"
+CHECK_EVERY_SECONDS = 60
+
+SIGNALS_FILE = "trade_signals_v12.csv"
+STATS_FILE = "trade_stats_v12.csv"
+DAILY_LOCK_FILE = "daily_risk_lock_v12.csv"
+PAIR_STATS_FILE = "pair_stats_v12.csv"
+
 sent_alerts = set()
 
+# -------------------------
+# ACCOUNT / RISK SETTINGS
+# -------------------------
+ACCOUNT_BALANCE = 1000.0           # CHANGE THIS TO YOUR REAL ACCOUNT
+RISK_PER_TRADE_PCT = 0.01          # 1% risk per trade
+MAX_DAILY_RISK_PCT = 0.03          # 3% max daily drawdown
+MAX_LOSSES_PER_DAY = 2             # stop after 2 losses
+COOLDOWN_AFTER_LOSS_MINUTES = 60   # cooldown after loss
+A_PLUS_ONLY_MODE = False           # True = only A+ signals
+MIN_COIN_WINRATE_TO_TRADE = 35.0   # blacklist weak performers
+MIN_TRADES_FOR_COIN_FILTER = 5      # only blacklist after enough history
+
+# -------------------------
+# WATCHLIST
+# -------------------------
 STOCK_TICKERS = [
     "AAPL", "TSLA", "NVDA", "SPY", "QQQ",
     "AMD", "META", "AMZN", "MSFT", "PLTR"
@@ -142,7 +161,7 @@ def compute_atr_yf(df: pd.DataFrame, period: int = 14) -> pd.Series:
     return tr.rolling(period).mean()
 
 # =========================================================
-# PRO SIGNAL LOGIC
+# PRICE ACTION / SMART MONEY LOGIC
 # =========================================================
 def liquidity_sweep_long(df: pd.DataFrame, lookback: int = 20) -> bool:
     if len(df) < lookback + 2:
@@ -219,9 +238,16 @@ def grade_signal(score: int) -> str:
 # =========================================================
 # SESSION FILTERS
 # =========================================================
-def is_good_crypto_session() -> bool:
+def get_crypto_session_strength():
     now = datetime.now(ZoneInfo("America/Chicago"))
-    return 2 <= now.hour <= 11
+    hour = now.hour
+
+    if 2 <= hour <= 11:
+        return "HIGH"
+    elif 12 <= hour <= 16 or 20 <= hour <= 23:
+        return "MID"
+    else:
+        return "LOW"
 
 def is_stock_market_open() -> bool:
     now = datetime.now(ZoneInfo("America/New_York"))
@@ -271,24 +297,63 @@ def get_bybit_klines(symbol: str, interval: str, limit: int = 200):
         print(f"{symbol}: Bybit data error -> {e}")
         return None
 
-def get_crypto_qty(bybit_symbol: str) -> str:
-    qty_map = {
-        "BTCUSDT": "0.001",
-        "ETHUSDT": "0.01",
-        "SOLUSDT": "1",
-        "XRPUSDT": "25",
-        "DOGEUSDT": "200",
-        "BNBUSDT": "0.05",
-        "AVAXUSDT": "2",
-        "LINKUSDT": "2",
-        "ADAUSDT": "50",
-        "LTCUSDT": "0.5",
-        "DOTUSDT": "10",
-        "ATOMUSDT": "5",
-        "NEARUSDT": "8",
-        "OPUSDT": "20"
+# =========================================================
+# POSITION SIZE / RISK
+# =========================================================
+def get_crypto_qty(bybit_symbol: str, entry: float = None, stop: float = None) -> str:
+    """
+    Risk-based quantity sizing.
+    qty = risk_dollars / stop_distance
+    """
+    fallback_qty_map = {
+        "BTCUSDT": 0.001,
+        "ETHUSDT": 0.01,
+        "SOLUSDT": 1,
+        "XRPUSDT": 25,
+        "DOGEUSDT": 200,
+        "BNBUSDT": 0.05,
+        "AVAXUSDT": 2,
+        "LINKUSDT": 2,
+        "ADAUSDT": 50,
+        "LTCUSDT": 0.5,
+        "DOTUSDT": 10,
+        "ATOMUSDT": 5,
+        "NEARUSDT": 8,
+        "OPUSDT": 20
     }
-    return qty_map.get(bybit_symbol, "1")
+
+    if entry is None or stop is None:
+        return str(fallback_qty_map.get(bybit_symbol, 1))
+
+    risk_dollars = ACCOUNT_BALANCE * RISK_PER_TRADE_PCT
+    stop_distance = abs(entry - stop)
+
+    if stop_distance <= 0:
+        return str(fallback_qty_map.get(bybit_symbol, 1))
+
+    raw_qty = risk_dollars / stop_distance
+
+    # simple rounding rules
+    if bybit_symbol == "BTCUSDT":
+        qty = round(raw_qty, 3)
+    elif bybit_symbol in ["ETHUSDT", "BNBUSDT", "LTCUSDT"]:
+        qty = round(raw_qty, 2)
+    elif bybit_symbol in ["SOLUSDT", "AVAXUSDT", "LINKUSDT", "ATOMUSDT", "NEARUSDT", "OPUSDT"]:
+        qty = round(raw_qty, 1)
+    else:
+        qty = round(raw_qty)
+
+    if qty <= 0:
+        qty = fallback_qty_map.get(bybit_symbol, 1)
+
+    return str(qty)
+
+def calculate_risk_reward(entry: float, stop: float, target: float) -> float:
+    risk = abs(entry - stop)
+    reward = abs(target - entry)
+    if risk <= 0:
+        return 0
+    return round(reward / risk, 2)
 
 # =========================================================
 # BTC FILTER
@@ -317,7 +382,7 @@ def get_btc_market_bias():
         return "neutral"
 
 # =========================================================
-# LEARNING ENGINE - FILES
+# FILE INIT
 # =========================================================
 def ensure_signal_file():
     if not os.path.exists(SIGNALS_FILE):
@@ -326,30 +391,194 @@ def ensure_signal_file():
             writer.writerow([
                 "timestamp", "symbol", "asset_type", "side", "timeframe",
                 "entry", "stop", "target", "rsi", "vwap", "atr",
-                "score", "grade", "setup", "status", "closed_at"
+                "score", "grade", "session_strength", "rr",
+                "setup", "status", "closed_at"
             ])
 
+def ensure_daily_lock_file():
+    if not os.path.exists(DAILY_LOCK_FILE):
+        with open(DAILY_LOCK_FILE, mode="w", newline="", encoding="utf-8") as file:
+            writer = csv.writer(file)
+            writer.writerow([
+                "date", "loss_count", "daily_risk_used", "cooldown_until"
+            ])
+
+def ensure_pair_stats_file():
+    if not os.path.exists(PAIR_STATS_FILE):
+        with open(PAIR_STATS_FILE, mode="w", newline="", encoding="utf-8") as file:
+            writer = csv.writer(file)
+            writer.writerow([
+                "symbol", "total_closed", "wins", "losses", "win_rate"
+            ])
+
+# =========================================================
+# LOGGING
+# =========================================================
 def log_signal(timestamp, symbol, asset_type, side, timeframe, entry, stop, target,
-               rsi, vwap, atr, score, grade, setup):
+               rsi, vwap, atr, score, grade, session_strength, rr, setup):
     ensure_signal_file()
     with open(SIGNALS_FILE, mode="a", newline="", encoding="utf-8") as file:
         writer = csv.writer(file)
         writer.writerow([
             timestamp, symbol, asset_type, side, timeframe,
             entry, stop, target, rsi, vwap, atr,
-            score, grade, setup, "OPEN", ""
+            score, grade, session_strength, rr,
+            setup, "OPEN", ""
         ])
 
 # =========================================================
-# LEARNING ENGINE - TRADE OUTCOME CHECKER
+# DAILY RISK LOCK ENGINE
+# =========================================================
+def get_today_date_str():
+    return datetime.now(ZoneInfo("America/Chicago")).strftime("%Y-%m-%d")
+
+def read_daily_lock():
+    ensure_daily_lock_file()
+    today = get_today_date_str()
+
+    try:
+        df = pd.read_csv(DAILY_LOCK_FILE)
+    except:
+        return {"date": today, "loss_count": 0, "daily_risk_used": 0.0, "cooldown_until": ""}
+
+    row = df[df["date"] == today]
+    if row.empty:
+        return {"date": today, "loss_count": 0, "daily_risk_used": 0.0, "cooldown_until": ""}
+
+    row = row.iloc[-1]
+    return {
+        "date": row["date"],
+        "loss_count": int(row["loss_count"]),
+        "daily_risk_used": float(row["daily_risk_used"]),
+        "cooldown_until": str(row["cooldown_until"]) if pd.notna(row["cooldown_until"]) else ""
+    }
+
+def write_daily_lock(loss_count: int, daily_risk_used: float, cooldown_until: str = ""):
+    ensure_daily_lock_file()
+    today = get_today_date_str()
+
+    rows = []
+    if os.path.exists(DAILY_LOCK_FILE):
+        try:
+            df = pd.read_csv(DAILY_LOCK_FILE)
+            rows = df[df["date"] != today].values.tolist()
+        except:
+            rows = []
+
+    rows.append([today, loss_count, daily_risk_used, cooldown_until])
+
+    with open(DAILY_LOCK_FILE, mode="w", newline="", encoding="utf-8") as file:
+        writer = csv.writer(file)
+        writer.writerow(["date", "loss_count", "daily_risk_used", "cooldown_until"])
+        writer.writerows(rows)
+
+def is_daily_locked():
+    lock = read_daily_lock()
+
+    max_daily_risk_dollars = ACCOUNT_BALANCE * MAX_DAILY_RISK_PCT
+
+    if lock["loss_count"] >= MAX_LOSSES_PER_DAY:
+        return True, f"Daily lock active: max losses reached ({lock['loss_count']})"
+
+    if lock["daily_risk_used"] >= max_daily_risk_dollars:
+        return True, f"Daily lock active: max daily risk reached (${lock['daily_risk_used']:.2f})"
+
+    if lock["cooldown_until"]:
+        try:
+            cooldown_until = datetime.fromisoformat(lock["cooldown_until"])
+            now = datetime.now(ZoneInfo("America/Chicago")).replace(tzinfo=None)
+            if now < cooldown_until:
+                return True, f"Cooldown active until {cooldown_until}"
+        except:
+            pass
+
+    return False, "OK"
+
+def register_loss_to_daily_lock():
+    lock = read_daily_lock()
+    risk_dollars = ACCOUNT_BALANCE * RISK_PER_TRADE_PCT
+
+    new_loss_count = lock["loss_count"] + 1
+    new_daily_risk = lock["daily_risk_used"] + risk_dollars
+    cooldown_until = (
+        datetime.now(ZoneInfo("America/Chicago")).replace(tzinfo=None) +
+        timedelta(minutes=COOLDOWN_AFTER_LOSS_MINUTES)
+    ).isoformat()
+
+    write_daily_lock(new_loss_count, new_daily_risk, cooldown_until)
+
+def register_win_no_lock_change():
+    # You can keep losses only; no reset here.
+    pass
+
+# =========================================================
+# PAIR LEARNING / BLACKLIST
+# =========================================================
+def rebuild_pair_stats():
+    ensure_signal_file()
+    ensure_pair_stats_file()
+
+    try:
+        df = pd.read_csv(SIGNALS_FILE)
+    except:
+        return
+
+    closed = df[df["status"].isin(["WIN", "LOSS"])].copy()
+    if closed.empty:
+        return
+
+    rows = []
+    for symbol, group in closed.groupby("symbol"):
+        total = len(group)
+        wins = len(group[group["status"] == "WIN"])
+        losses = len(group[group["status"] == "LOSS"])
+        win_rate = round((wins / total) * 100, 2) if total > 0 else 0.0
+        rows.append([symbol, total, wins, losses, win_rate])
+
+    with open(PAIR_STATS_FILE, mode="w", newline="", encoding="utf-8") as file:
+        writer = csv.writer(file)
+        writer.writerow(["symbol", "total_closed", "wins", "losses", "win_rate"])
+        writer.writerows(rows)
+
+def get_pair_stats(symbol: str):
+    ensure_pair_stats_file()
+    try:
+        df = pd.read_csv(PAIR_STATS_FILE)
+    except:
+        return None
+
+    row = df[df["symbol"] == symbol]
+    if row.empty:
+        return None
+
+    row = row.iloc[-1]
+    return {
+        "symbol": row["symbol"],
+        "total_closed": int(row["total_closed"]),
+        "wins": int(row["wins"]),
+        "losses": int(row["losses"]),
+        "win_rate": float(row["win_rate"])
+    }
+
+def is_coin_blacklisted(symbol: str) -> bool:
+    stats = get_pair_stats(symbol)
+    if not stats:
+        return False
+
+    if stats["total_closed"] < MIN_TRADES_FOR_COIN_FILTER:
+        return False
+
+    return stats["win_rate"] < MIN_COIN_WINRATE_TO_TRADE
+
+# =========================================================
+# TRADE OUTCOME CHECKER
 # =========================================================
 def get_future_price_data(symbol: str, asset_type: str):
     try:
         if asset_type == "crypto":
             return get_bybit_klines(symbol, "5", 300)
         else:
-            ticker = symbol
-            return get_data(ticker, interval="5m", period="5d")
+            return get_data(symbol, interval="5m", period="5d")
     except Exception as e:
         print(f"Future data fetch error for {symbol}: {e}")
         return None
@@ -376,7 +605,6 @@ def update_signal_results():
         symbol = row["symbol"]
         asset_type = row["asset_type"]
         side = row["side"]
-        entry = float(row["entry"])
         stop = float(row["stop"])
         target = float(row["target"])
         signal_time = pd.to_datetime(row["timestamp"])
@@ -406,11 +634,13 @@ def update_signal_results():
                         df.at[i, "status"] = "LOSS"
                         df.at[i, "closed_at"] = str(candle["timestamp"])
                         updated = True
+                        register_loss_to_daily_lock()
                         break
                     if high >= target:
                         df.at[i, "status"] = "WIN"
                         df.at[i, "closed_at"] = str(candle["timestamp"])
                         updated = True
+                        register_win_no_lock_change()
                         break
 
                 elif side == "SELL":
@@ -418,11 +648,13 @@ def update_signal_results():
                         df.at[i, "status"] = "LOSS"
                         df.at[i, "closed_at"] = str(candle["timestamp"])
                         updated = True
+                        register_loss_to_daily_lock()
                         break
                     if low <= target:
                         df.at[i, "status"] = "WIN"
                         df.at[i, "closed_at"] = str(candle["timestamp"])
                         updated = True
+                        register_win_no_lock_change()
                         break
 
         else:
@@ -431,19 +663,21 @@ def update_signal_results():
                 continue
 
             for idx, candle in candles.iterrows():
-                high = float(to_series(pd.Series([candle["High"]])).iloc[0])
-                low = float(to_series(pd.Series([candle["Low"]])).iloc[0])
+                high = float(candle["High"])
+                low = float(candle["Low"])
 
                 if side == "BUY":
                     if low <= stop:
                         df.at[i, "status"] = "LOSS"
                         df.at[i, "closed_at"] = str(idx)
                         updated = True
+                        register_loss_to_daily_lock()
                         break
                     if high >= target:
                         df.at[i, "status"] = "WIN"
                         df.at[i, "closed_at"] = str(idx)
                         updated = True
+                        register_win_no_lock_change()
                         break
 
                 elif side == "SELL":
@@ -451,19 +685,22 @@ def update_signal_results():
                         df.at[i, "status"] = "LOSS"
                         df.at[i, "closed_at"] = str(idx)
                         updated = True
+                        register_loss_to_daily_lock()
                         break
                     if low <= target:
                         df.at[i, "status"] = "WIN"
                         df.at[i, "closed_at"] = str(idx)
                         updated = True
+                        register_win_no_lock_change()
                         break
 
     if updated:
         df.to_csv(SIGNALS_FILE, index=False)
-        print("Updated signal results.")
+        rebuild_pair_stats()
+        print("Updated signal results and rebuilt pair stats.")
 
 # =========================================================
-# LEARNING ENGINE - STATS
+# PERFORMANCE STATS
 # =========================================================
 def build_stats():
     ensure_signal_file()
@@ -507,23 +744,23 @@ def send_daily_stats_report():
         lambda x: round((x == "WIN").mean() * 100, 1)
     ).sort_values(ascending=False)
 
-    side_stats = closed.groupby("side")["status"].apply(
+    session_stats = closed.groupby("session_strength")["status"].apply(
         lambda x: round((x == "WIN").mean() * 100, 1)
     ).sort_values(ascending=False)
 
     top_coins = "\n".join([f"{k}: {v}%" for k, v in coin_stats.head(5).items()])
     top_grades = "\n".join([f"{k}: {v}%" for k, v in grade_stats.items()])
-    top_sides = "\n".join([f"{k}: {v}%" for k, v in side_stats.items()])
+    top_sessions = "\n".join([f"{k}: {v}%" for k, v in session_stats.items()])
 
     msg = (
-        f"📊 V10 DAILY PERFORMANCE REPORT\n\n"
+        f"📊 V12 DEBT-SURVIVAL REPORT\n\n"
         f"Total Closed Trades: {summary['total_trades']}\n"
         f"Wins: {summary['wins']}\n"
         f"Losses: {summary['losses']}\n"
         f"Win Rate: {summary['win_rate']}%\n\n"
         f"🏆 Top Coins:\n{top_coins if top_coins else 'No data'}\n\n"
         f"🎯 Grade Performance:\n{top_grades if top_grades else 'No data'}\n\n"
-        f"📈 Side Performance:\n{top_sides if top_sides else 'No data'}"
+        f"⏰ Session Performance:\n{top_sessions if top_sessions else 'No data'}"
     )
 
     send_telegram_message(msg)
@@ -532,15 +769,23 @@ def send_daily_stats_report():
 # CRYPTO SCANNER
 # =========================================================
 def scan_crypto_intraday():
-    if not is_good_crypto_session():
-        print("Crypto session filter: outside best trading hours. Skipping crypto scan.")
+    locked, lock_reason = is_daily_locked()
+    if locked:
+        print(f"Crypto scan blocked: {lock_reason}")
         return
+
+    session_strength = get_crypto_session_strength()
+    print(f"Crypto session strength: {session_strength}")
 
     btc_bias = get_btc_market_bias()
     print(f"BTC market bias: {btc_bias}")
 
     for symbol in CRYPTO_SYMBOLS:
         try:
+            if is_coin_blacklisted(symbol):
+                print(f"{symbol}: blacklisted by learning engine (low historical win rate)")
+                continue
+
             df_5m = get_bybit_klines(symbol, "5", 200)
             df_15m = get_bybit_klines(symbol, "15", 200)
             df_1h = get_bybit_klines(symbol, "60", 200)
@@ -609,6 +854,9 @@ def scan_crypto_intraday():
             btc_buy_ok = True if symbol == "BTCUSDT" else btc_bias in ["bull", "neutral"]
             btc_sell_ok = True if symbol == "BTCUSDT" else btc_bias in ["bear", "neutral"]
 
+            # -------------------------
+            # SCORE ENGINE
+            # -------------------------
             long_score = 0
             if trend_1h_bull: long_score += 2
             if trend_15m_bull: long_score += 2
@@ -639,26 +887,69 @@ def scan_crypto_intraday():
             if btc_sell_ok: short_score += 1
             if choppy: short_score -= 3
 
+            # Session boost/penalty
+            if session_strength == "HIGH":
+                long_score += 1
+                short_score += 1
+            elif session_strength == "LOW":
+                long_score -= 1
+                short_score -= 1
+
             long_grade = grade_signal(long_score)
             short_grade = grade_signal(short_score)
 
+            # harder outside best hours
+            min_score_required = 8 if session_strength == "HIGH" else 9 if session_strength == "MID" else 10
+
+            # dead hours need real confirmation
+            extra_low_session_long_ok = True
+            if session_strength == "LOW":
+                extra_low_session_long_ok = bos_long or trap_long or bull_candle
+
+            extra_low_session_short_ok = True
+            if session_strength == "LOW":
+                extra_low_session_short_ok = bos_short or trap_short or bear_candle
+
+            # A+ only mode
+            grade_buy_ok = long_grade == "A+" if A_PLUS_ONLY_MODE else long_grade in ["A+", "A"]
+            grade_sell_ok = short_grade == "A+" if A_PLUS_ONLY_MODE else short_grade in ["A+", "A"]
+
             buy_signal = (
-                long_grade in ["A+", "A"] and atr > 0 and not choppy and
-                trend_1h_bull and trend_15m_bull and liq_long and fresh_bull and
-                vwap_buy_ok and room_long and btc_buy_ok
+                long_score >= min_score_required and
+                grade_buy_ok and
+                atr > 0 and
+                not choppy and
+                trend_1h_bull and
+                trend_15m_bull and
+                liq_long and
+                fresh_bull and
+                vwap_buy_ok and
+                room_long and
+                btc_buy_ok and
+                extra_low_session_long_ok
             )
 
             sell_signal = (
-                short_grade in ["A+", "A"] and atr > 0 and not choppy and
-                trend_1h_bear and trend_15m_bear and liq_short and fresh_bear and
-                vwap_sell_ok and room_short and btc_sell_ok
+                short_score >= min_score_required and
+                grade_sell_ok and
+                atr > 0 and
+                not choppy and
+                trend_1h_bear and
+                trend_15m_bear and
+                liq_short and
+                fresh_bear and
+                vwap_sell_ok and
+                room_short and
+                btc_sell_ok and
+                extra_low_session_short_ok
             )
 
             if buy_signal:
                 entry = price
                 stop = round(entry - (1.2 * atr), 4)
                 target = round(entry + (2.2 * atr), 4)
-                qty = get_crypto_qty(symbol)
+                rr = calculate_risk_reward(entry, stop, target)
+                qty = get_crypto_qty(symbol, entry, stop)
                 timestamp = datetime.now(ZoneInfo("America/Chicago")).strftime("%Y-%m-%d %H:%M:%S")
                 alert_key = f"{symbol}-BUY-{str(df_5m.iloc[-1]['timestamp'])}"
 
@@ -666,11 +957,14 @@ def scan_crypto_intraday():
                     sent_alerts.add(alert_key)
 
                     msg = (
-                        f"🔥 {long_grade} SNIPER CRYPTO BUY\n"
+                        f"🔥 {long_grade} ELITE CRYPTO BUY\n"
                         f"Ticker: {symbol}\n"
+                        f"Session: {session_strength}\n"
                         f"Entry: {entry:.4f}\n"
                         f"Stop: {stop}\n"
                         f"Target: {target}\n"
+                        f"R:R: {rr}\n"
+                        f"Qty: {qty}\n"
                         f"RSI: {rsi:.2f}\n"
                         f"VWAP: {vwap:.4f}\n"
                         f"ATR: {atr:.4f}\n"
@@ -684,8 +978,8 @@ def scan_crypto_intraday():
                     log_signal(
                         timestamp, symbol, "crypto", "BUY", "5m/15m/1h",
                         entry, stop, target, round(rsi, 2), round(vwap, 4),
-                        round(atr, 4), long_score, long_grade,
-                        "Sniper long: liquidity + structure + BTC filter + ATR"
+                        round(atr, 4), long_score, long_grade, session_strength, rr,
+                        "Elite long: liquidity + structure + BTC filter + ATR + session filter"
                     )
                     print(f"Sent {long_grade} BUY alert for {symbol}")
 
@@ -693,7 +987,8 @@ def scan_crypto_intraday():
                 entry = price
                 stop = round(entry + (1.2 * atr), 4)
                 target = round(entry - (2.2 * atr), 4)
-                qty = get_crypto_qty(symbol)
+                rr = calculate_risk_reward(entry, stop, target)
+                qty = get_crypto_qty(symbol, entry, stop)
                 timestamp = datetime.now(ZoneInfo("America/Chicago")).strftime("%Y-%m-%d %H:%M:%S")
                 alert_key = f"{symbol}-SELL-{str(df_5m.iloc[-1]['timestamp'])}"
 
@@ -701,11 +996,14 @@ def scan_crypto_intraday():
                     sent_alerts.add(alert_key)
 
                     msg = (
-                        f"🔻 {short_grade} SNIPER CRYPTO SELL\n"
+                        f"🔻 {short_grade} ELITE CRYPTO SELL\n"
                         f"Ticker: {symbol}\n"
+                        f"Session: {session_strength}\n"
                         f"Entry: {entry:.4f}\n"
                         f"Stop: {stop}\n"
                         f"Target: {target}\n"
+                        f"R:R: {rr}\n"
+                        f"Qty: {qty}\n"
                         f"RSI: {rsi:.2f}\n"
                         f"VWAP: {vwap:.4f}\n"
                         f"ATR: {atr:.4f}\n"
@@ -719,14 +1017,14 @@ def scan_crypto_intraday():
                     log_signal(
                         timestamp, symbol, "crypto", "SELL", "5m/15m/1h",
                         entry, stop, target, round(rsi, 2), round(vwap, 4),
-                        round(atr, 4), short_score, short_grade,
-                        "Sniper short: liquidity + structure + BTC filter + ATR"
+                        round(atr, 4), short_score, short_grade, session_strength, rr,
+                        "Elite short: liquidity + structure + BTC filter + ATR + session filter"
                     )
                     print(f"Sent {short_grade} SELL alert for {symbol}")
 
             else:
                 print(
-                    f"{symbol}: no sniper setup | "
+                    f"{symbol}: no elite setup | "
                     f"price={price:.4f}, ema9={ema9:.4f}, ema20={ema20:.4f}, "
                     f"rsi={rsi:.2f}, vwap={vwap:.4f}, atr={atr:.4f}, "
                     f"long_score={long_score}, short_score={short_score}, choppy={choppy}"
@@ -739,6 +1037,11 @@ def scan_crypto_intraday():
 # STOCK SCANNER
 # =========================================================
 def analyze_intraday_symbol(ticker: str, asset_type: str):
+    locked, lock_reason = is_daily_locked()
+    if locked:
+        print(f"Stock scan blocked: {lock_reason}")
+        return
+
     df_5m = get_data(ticker, interval="5m", period="5d")
     df_15m = get_data(ticker, interval="15m", period="10d")
     df_1h = get_data(ticker, interval="60m", period="30d")
@@ -846,14 +1149,17 @@ def analyze_intraday_symbol(ticker: str, asset_type: str):
     short_grade = grade_signal(short_score)
     timestamp = datetime.now(ZoneInfo("America/Chicago")).strftime("%Y-%m-%d %H:%M:%S")
 
+    grade_buy_ok = long_grade == "A+" if A_PLUS_ONLY_MODE else long_grade in ["A+", "A"]
+    grade_sell_ok = short_grade == "A+" if A_PLUS_ONLY_MODE else short_grade in ["A+", "A"]
+
     bullish = (
-        long_grade in ["A+", "A"] and last_atr_5m > 0 and not choppy and
+        grade_buy_ok and last_atr_5m > 0 and not choppy and
         trend_1h_bull and trend_15m_bull and liq_long and fresh_bullish_5m and
         vwap_buy_ok and room_long
     )
 
     bearish = (
-        short_grade in ["A+", "A"] and last_atr_5m > 0 and not choppy and
+        grade_sell_ok and last_atr_5m > 0 and not choppy and
         trend_1h_bear and trend_15m_bear and liq_short and fresh_bearish_5m and
         vwap_sell_ok and room_short
     )
@@ -865,14 +1171,16 @@ def analyze_intraday_symbol(ticker: str, asset_type: str):
 
             stop = round(last_price - (1.2 * last_atr_5m), 4)
             target = round(last_price + (2.2 * last_atr_5m), 4)
-            setup = "Sniper long: 1H+15m trend + 5m liquidity reclaim + BOS + VWAP + ATR"
+            rr = calculate_risk_reward(last_price, stop, target)
+            setup = "Elite stock long: 1H+15m trend + 5m liquidity reclaim + BOS + VWAP + ATR"
 
             msg = (
-                f"🔥 {long_grade} SNIPER STOCK BUY\n"
+                f"🔥 {long_grade} ELITE STOCK BUY\n"
                 f"Ticker: {ticker}\n"
                 f"Entry: {last_price:.4f}\n"
                 f"Stop: {stop:.4f}\n"
                 f"Target: {target:.4f}\n"
+                f"R:R: {rr}\n"
                 f"RSI(5m): {last_rsi_5m:.2f}\n"
                 f"VWAP: {last_vwap_5m:.4f}\n"
                 f"ATR: {last_atr_5m:.4f}\n"
@@ -884,9 +1192,9 @@ def analyze_intraday_symbol(ticker: str, asset_type: str):
                 timestamp, ticker, "stock", "BUY", "5m/15m/1h",
                 round(last_price, 4), stop, target, round(last_rsi_5m, 2),
                 round(last_vwap_5m, 4), round(last_atr_5m, 4),
-                long_score, long_grade, setup
+                long_score, long_grade, "STOCK_SESSION", rr, setup
             )
-            print(f"Sent sniper BUY alert for {ticker}")
+            print(f"Sent elite BUY alert for {ticker}")
 
     elif bearish:
         alert_key = f"{ticker}-SELL-{str(close_5m.index[-1])}"
@@ -895,14 +1203,16 @@ def analyze_intraday_symbol(ticker: str, asset_type: str):
 
             stop = round(last_price + (1.2 * last_atr_5m), 4)
             target = round(last_price - (2.2 * last_atr_5m), 4)
-            setup = "Sniper short: 1H+15m trend + 5m liquidity rejection + BOS + VWAP + ATR"
+            rr = calculate_risk_reward(last_price, stop, target)
+            setup = "Elite stock short: 1H+15m trend + 5m liquidity rejection + BOS + VWAP + ATR"
 
             msg = (
-                f"🔻 {short_grade} SNIPER STOCK SELL\n"
+                f"🔻 {short_grade} ELITE STOCK SELL\n"
                 f"Ticker: {ticker}\n"
                 f"Entry: {last_price:.4f}\n"
                 f"Stop: {stop:.4f}\n"
                 f"Target: {target:.4f}\n"
+                f"R:R: {rr}\n"
                 f"RSI(5m): {last_rsi_5m:.2f}\n"
                 f"VWAP: {last_vwap_5m:.4f}\n"
                 f"ATR: {last_atr_5m:.4f}\n"
@@ -914,13 +1224,13 @@ def analyze_intraday_symbol(ticker: str, asset_type: str):
                 timestamp, ticker, "stock", "SELL", "5m/15m/1h",
                 round(last_price, 4), stop, target, round(last_rsi_5m, 2),
                 round(last_vwap_5m, 4), round(last_atr_5m, 4),
-                short_score, short_grade, setup
+                short_score, short_grade, "STOCK_SESSION", rr, setup
             )
-            print(f"Sent sniper SELL alert for {ticker}")
+            print(f"Sent elite SELL alert for {ticker}")
 
     else:
         print(
-            f"{ticker}: no sniper setup | "
+            f"{ticker}: no elite setup | "
             f"price={last_price:.4f}, ema9={last_ema9_5m:.4f}, ema20={last_ema20_5m:.4f}, "
             f"rsi={last_rsi_5m:.2f}, vwap={last_vwap_5m:.4f}, atr={last_atr_5m:.4f}, "
             f"long_score={long_score}, short_score={short_score}, choppy={choppy}"
@@ -934,7 +1244,10 @@ def main():
         raise ValueError("Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID first.")
 
     ensure_signal_file()
-    send_telegram_message("✅ Scanner bot V10 LEARNING BOT started")
+    ensure_daily_lock_file()
+    ensure_pair_stats_file()
+
+    send_telegram_message("✅ Scanner bot V12 DEBT-SURVIVAL started")
     print("Bot started successfully. Entering main loop...")
 
     last_report_day = None
@@ -946,7 +1259,7 @@ def main():
             # 1) update old trade outcomes
             update_signal_results()
 
-            # 2) stocks
+            # 2) stocks (only market hours)
             if is_stock_market_open():
                 for ticker in STOCK_TICKERS:
                     try:
@@ -956,7 +1269,7 @@ def main():
             else:
                 print("Stock market is closed. Skipping stock scan.")
 
-            # 3) crypto
+            # 3) crypto (24/7)
             try:
                 scan_crypto_intraday()
             except Exception as e:

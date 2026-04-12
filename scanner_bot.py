@@ -41,24 +41,31 @@ bybit = HTTP(
 # =========================================================
 CHECK_EVERY_SECONDS = 60
 
-SIGNALS_FILE = "trade_signals_v12.csv"
-STATS_FILE = "trade_stats_v12.csv"
-DAILY_LOCK_FILE = "daily_risk_lock_v12.csv"
-PAIR_STATS_FILE = "pair_stats_v12.csv"
+SIGNALS_FILE = "trade_signals_v13.csv"
+STATS_FILE = "trade_stats_v13.csv"
+DAILY_LOCK_FILE = "daily_risk_lock_v13.csv"
+PAIR_STATS_FILE = "pair_stats_v13.csv"
 
 sent_alerts = set()
 
 # -------------------------
 # ACCOUNT / RISK SETTINGS
 # -------------------------
-ACCOUNT_BALANCE = 1000.0           # CHANGE THIS TO YOUR REAL ACCOUNT
-RISK_PER_TRADE_PCT = 0.01          # 1% risk per trade
-MAX_DAILY_RISK_PCT = 0.03          # 3% max daily drawdown
-MAX_LOSSES_PER_DAY = 2             # stop after 2 losses
-COOLDOWN_AFTER_LOSS_MINUTES = 60   # cooldown after loss
-A_PLUS_ONLY_MODE = False           # True = only A+ signals
-MIN_COIN_WINRATE_TO_TRADE = 35.0   # blacklist weak performers
-MIN_TRADES_FOR_COIN_FILTER = 5      # only blacklist after enough history
+ACCOUNT_BALANCE = 1000.0
+RISK_PER_TRADE_PCT = 0.01
+MAX_DAILY_RISK_PCT = 0.03
+MAX_LOSSES_PER_DAY = 2
+COOLDOWN_AFTER_LOSS_MINUTES = 60
+A_PLUS_ONLY_MODE = False
+MIN_COIN_WINRATE_TO_TRADE = 35.0
+MIN_TRADES_FOR_COIN_FILTER = 5
+
+# -------------------------
+# DIAGNOSTIC SETTINGS
+# -------------------------
+# Send a Telegram summary every N cycles showing best scores seen.
+# Set to 0 to disable. Recommended: 30 (every 30 min if CHECK_EVERY_SECONDS=60)
+DIAGNOSTIC_EVERY_N_CYCLES = 30
 
 # -------------------------
 # WATCHLIST
@@ -215,16 +222,19 @@ def fake_breakdown_trap_long(df: pd.DataFrame, lookback: int = 20) -> bool:
     latest = df.iloc[-1]
     return latest["low"] < recent_low and latest["close"] > recent_low
 
-def enough_room_long(entry: float, recent_high: float, atr: float) -> bool:
-    return (recent_high - entry) > (atr * 1.2)
+def enough_room_long(entry: float, target: float, atr: float) -> bool:
+    """Fixed: simply check target is meaningfully above entry."""
+    return (target - entry) > (atr * 1.2)
 
-def enough_room_short(entry: float, recent_low: float, atr: float) -> bool:
-    return (entry - recent_low) > (atr * 1.2)
+def enough_room_short(entry: float, target: float, atr: float) -> bool:
+    """Fixed: simply check target is meaningfully below entry."""
+    return (entry - target) > (atr * 1.2)
 
 def is_choppy_market(price: float, ema9: float, ema20: float, atr: float) -> bool:
     if atr <= 0:
         return True
-    return abs(ema9 - ema20) < (atr * 0.15)
+    # Slightly relaxed: was 0.15, now 0.12 — avoids flagging mild trends as choppy
+    return abs(ema9 - ema20) < (atr * 0.12)
 
 def grade_signal(score: int) -> str:
     if score >= 10:
@@ -241,7 +251,6 @@ def grade_signal(score: int) -> str:
 def get_crypto_session_strength():
     now = datetime.now(ZoneInfo("America/Chicago"))
     hour = now.hour
-
     if 2 <= hour <= 11:
         return "HIGH"
     elif 12 <= hour <= 16 or 20 <= hour <= 23:
@@ -301,10 +310,6 @@ def get_bybit_klines(symbol: str, interval: str, limit: int = 200):
 # POSITION SIZE / RISK
 # =========================================================
 def get_crypto_qty(bybit_symbol: str, entry: float = None, stop: float = None) -> str:
-    """
-    Risk-based quantity sizing.
-    qty = risk_dollars / stop_distance
-    """
     fallback_qty_map = {
         "BTCUSDT": 0.001,
         "ETHUSDT": 0.01,
@@ -333,7 +338,6 @@ def get_crypto_qty(bybit_symbol: str, entry: float = None, stop: float = None) -
 
     raw_qty = risk_dollars / stop_distance
 
-    # simple rounding rules
     if bybit_symbol == "BTCUSDT":
         qty = round(raw_qty, 3)
     elif bybit_symbol in ["ETHUSDT", "BNBUSDT", "LTCUSDT"]:
@@ -399,17 +403,13 @@ def ensure_daily_lock_file():
     if not os.path.exists(DAILY_LOCK_FILE):
         with open(DAILY_LOCK_FILE, mode="w", newline="", encoding="utf-8") as file:
             writer = csv.writer(file)
-            writer.writerow([
-                "date", "loss_count", "daily_risk_used", "cooldown_until"
-            ])
+            writer.writerow(["date", "loss_count", "daily_risk_used", "cooldown_until"])
 
 def ensure_pair_stats_file():
     if not os.path.exists(PAIR_STATS_FILE):
         with open(PAIR_STATS_FILE, mode="w", newline="", encoding="utf-8") as file:
             writer = csv.writer(file)
-            writer.writerow([
-                "symbol", "total_closed", "wins", "losses", "win_rate"
-            ])
+            writer.writerow(["symbol", "total_closed", "wins", "losses", "win_rate"])
 
 # =========================================================
 # LOGGING
@@ -435,7 +435,6 @@ def get_today_date_str():
 def read_daily_lock():
     ensure_daily_lock_file()
     today = get_today_date_str()
-
     try:
         df = pd.read_csv(DAILY_LOCK_FILE)
     except:
@@ -456,7 +455,6 @@ def read_daily_lock():
 def write_daily_lock(loss_count: int, daily_risk_used: float, cooldown_until: str = ""):
     ensure_daily_lock_file()
     today = get_today_date_str()
-
     rows = []
     if os.path.exists(DAILY_LOCK_FILE):
         try:
@@ -466,7 +464,6 @@ def write_daily_lock(loss_count: int, daily_risk_used: float, cooldown_until: st
             rows = []
 
     rows.append([today, loss_count, daily_risk_used, cooldown_until])
-
     with open(DAILY_LOCK_FILE, mode="w", newline="", encoding="utf-8") as file:
         writer = csv.writer(file)
         writer.writerow(["date", "loss_count", "daily_risk_used", "cooldown_until"])
@@ -474,21 +471,18 @@ def write_daily_lock(loss_count: int, daily_risk_used: float, cooldown_until: st
 
 def is_daily_locked():
     lock = read_daily_lock()
-
     max_daily_risk_dollars = ACCOUNT_BALANCE * MAX_DAILY_RISK_PCT
 
     if lock["loss_count"] >= MAX_LOSSES_PER_DAY:
-        return True, f"Daily lock active: max losses reached ({lock['loss_count']})"
-
+        return True, f"Daily lock: max losses reached ({lock['loss_count']})"
     if lock["daily_risk_used"] >= max_daily_risk_dollars:
-        return True, f"Daily lock active: max daily risk reached (${lock['daily_risk_used']:.2f})"
-
+        return True, f"Daily lock: max daily risk reached (${lock['daily_risk_used']:.2f})"
     if lock["cooldown_until"]:
         try:
             cooldown_until = datetime.fromisoformat(lock["cooldown_until"])
             now = datetime.now(ZoneInfo("America/Chicago")).replace(tzinfo=None)
             if now < cooldown_until:
-                return True, f"Cooldown active until {cooldown_until}"
+                return True, f"Cooldown until {cooldown_until}"
         except:
             pass
 
@@ -497,18 +491,15 @@ def is_daily_locked():
 def register_loss_to_daily_lock():
     lock = read_daily_lock()
     risk_dollars = ACCOUNT_BALANCE * RISK_PER_TRADE_PCT
-
     new_loss_count = lock["loss_count"] + 1
     new_daily_risk = lock["daily_risk_used"] + risk_dollars
     cooldown_until = (
         datetime.now(ZoneInfo("America/Chicago")).replace(tzinfo=None) +
         timedelta(minutes=COOLDOWN_AFTER_LOSS_MINUTES)
     ).isoformat()
-
     write_daily_lock(new_loss_count, new_daily_risk, cooldown_until)
 
 def register_win_no_lock_change():
-    # You can keep losses only; no reset here.
     pass
 
 # =========================================================
@@ -517,7 +508,6 @@ def register_win_no_lock_change():
 def rebuild_pair_stats():
     ensure_signal_file()
     ensure_pair_stats_file()
-
     try:
         df = pd.read_csv(SIGNALS_FILE)
     except:
@@ -564,10 +554,8 @@ def is_coin_blacklisted(symbol: str) -> bool:
     stats = get_pair_stats(symbol)
     if not stats:
         return False
-
     if stats["total_closed"] < MIN_TRADES_FOR_COIN_FILTER:
         return False
-
     return stats["win_rate"] < MIN_COIN_WINRATE_TO_TRADE
 
 # =========================================================
@@ -585,7 +573,6 @@ def get_future_price_data(symbol: str, asset_type: str):
 
 def update_signal_results():
     ensure_signal_file()
-
     try:
         df = pd.read_csv(SIGNALS_FILE)
     except Exception as e:
@@ -704,7 +691,6 @@ def update_signal_results():
 # =========================================================
 def build_stats():
     ensure_signal_file()
-
     try:
         df = pd.read_csv(SIGNALS_FILE)
     except Exception as e:
@@ -720,13 +706,7 @@ def build_stats():
     losses = len(closed[closed["status"] == "LOSS"])
     win_rate = round((wins / total) * 100, 2) if total > 0 else 0
 
-    summary = {
-        "total_trades": total,
-        "wins": wins,
-        "losses": losses,
-        "win_rate": win_rate
-    }
-
+    summary = {"total_trades": total, "wins": wins, "losses": losses, "win_rate": win_rate}
     return summary, closed
 
 def send_daily_stats_report():
@@ -753,7 +733,7 @@ def send_daily_stats_report():
     top_sessions = "\n".join([f"{k}: {v}%" for k, v in session_stats.items()])
 
     msg = (
-        f"📊 V12 DEBT-SURVIVAL REPORT\n\n"
+        f"📊 V13 DAILY REPORT\n\n"
         f"Total Closed Trades: {summary['total_trades']}\n"
         f"Wins: {summary['wins']}\n"
         f"Losses: {summary['losses']}\n"
@@ -762,13 +742,42 @@ def send_daily_stats_report():
         f"🎯 Grade Performance:\n{top_grades if top_grades else 'No data'}\n\n"
         f"⏰ Session Performance:\n{top_sessions if top_sessions else 'No data'}"
     )
-
     send_telegram_message(msg)
+
+# =========================================================
+# DIAGNOSTIC REPORT
+# Shows what's blocking signals without spamming every cycle
+# =========================================================
+def build_diagnostic_report(scan_log: list) -> str:
+    """
+    scan_log: list of dicts with keys:
+        symbol, long_score, short_score, blockers_long, blockers_short
+    """
+    if not scan_log:
+        return "No scan data."
+
+    # Sort by best score seen
+    best = sorted(scan_log, key=lambda x: max(x["long_score"], x["short_score"]), reverse=True)[:5]
+
+    lines = ["🔍 V13 DIAGNOSTIC — Top Candidates\n"]
+    for entry in best:
+        sym = entry["symbol"]
+        ls = entry["long_score"]
+        ss = entry["short_score"]
+        bl = ", ".join(entry["blockers_long"]) if entry["blockers_long"] else "none"
+        bs = ", ".join(entry["blockers_short"]) if entry["blockers_short"] else "none"
+        lines.append(
+            f"{sym}\n"
+            f"  Long score: {ls} | Blocked by: {bl}\n"
+            f"  Short score: {ss} | Blocked by: {bs}"
+        )
+
+    return "\n".join(lines)
 
 # =========================================================
 # CRYPTO SCANNER
 # =========================================================
-def scan_crypto_intraday():
+def scan_crypto_intraday(scan_log: list):
     locked, lock_reason = is_daily_locked()
     if locked:
         print(f"Crypto scan blocked: {lock_reason}")
@@ -783,7 +792,7 @@ def scan_crypto_intraday():
     for symbol in CRYPTO_SYMBOLS:
         try:
             if is_coin_blacklisted(symbol):
-                print(f"{symbol}: blacklisted by learning engine (low historical win rate)")
+                print(f"{symbol}: blacklisted")
                 continue
 
             df_5m = get_bybit_klines(symbol, "5", 200)
@@ -797,167 +806,208 @@ def scan_crypto_intraday():
                 print(f"{symbol}: missing timeframe data")
                 continue
 
-            df_5m["ema9"] = df_5m["close"].ewm(span=9, adjust=False).mean()
-            df_5m["ema20"] = df_5m["close"].ewm(span=20, adjust=False).mean()
-            df_5m["rsi"] = compute_rsi(df_5m["close"])
-            df_5m["vwap"] = compute_vwap_bybit(df_5m)
-            df_5m["atr"] = compute_atr_df(df_5m, 14)
+            df_5m["ema9"]   = df_5m["close"].ewm(span=9,  adjust=False).mean()
+            df_5m["ema20"]  = df_5m["close"].ewm(span=20, adjust=False).mean()
+            df_5m["rsi"]    = compute_rsi(df_5m["close"])
+            df_5m["vwap"]   = compute_vwap_bybit(df_5m)
+            df_5m["atr"]    = compute_atr_df(df_5m, 14)
             df_5m["vol_avg"] = df_5m["volume"].rolling(20).mean()
 
             df_15m["ema20"] = df_15m["close"].ewm(span=20, adjust=False).mean()
-            df_1h["ema20"] = df_1h["close"].ewm(span=20, adjust=False).mean()
+            df_1h["ema20"]  = df_1h["close"].ewm(span=20, adjust=False).mean()
 
-            latest_5m = df_5m.iloc[-1]
-            prev_5m = df_5m.iloc[-2]
+            latest_5m  = df_5m.iloc[-1]
+            prev_5m    = df_5m.iloc[-2]
             latest_15m = df_15m.iloc[-1]
-            latest_1h = df_1h.iloc[-1]
+            latest_1h  = df_1h.iloc[-1]
 
-            price = float(latest_5m["close"])
-            ema9 = float(latest_5m["ema9"])
-            ema20 = float(latest_5m["ema20"])
-            rsi = float(latest_5m["rsi"])
-            vwap = float(latest_5m["vwap"])
-            atr = float(latest_5m["atr"]) if pd.notna(latest_5m["atr"]) else 0
-            vol = float(latest_5m["volume"])
+            price   = float(latest_5m["close"])
+            ema9    = float(latest_5m["ema9"])
+            ema20   = float(latest_5m["ema20"])
+            rsi     = float(latest_5m["rsi"])
+            vwap    = float(latest_5m["vwap"])
+            atr     = float(latest_5m["atr"])   if pd.notna(latest_5m["atr"])    else 0
+            vol     = float(latest_5m["volume"])
             vol_avg = float(latest_5m["vol_avg"]) if pd.notna(latest_5m["vol_avg"]) else 0
 
             trend_15m_bull = latest_15m["close"] > latest_15m["ema20"]
             trend_15m_bear = latest_15m["close"] < latest_15m["ema20"]
-            trend_1h_bull = latest_1h["close"] > latest_1h["ema20"]
-            trend_1h_bear = latest_1h["close"] < latest_1h["ema20"]
+            trend_1h_bull  = latest_1h["close"]  > latest_1h["ema20"]
+            trend_1h_bear  = latest_1h["close"]  < latest_1h["ema20"]
 
+            # EMA crossover: now optional (score point only)
             fresh_bull = prev_5m["ema9"] <= prev_5m["ema20"] and latest_5m["ema9"] > latest_5m["ema20"]
             fresh_bear = prev_5m["ema9"] >= prev_5m["ema20"] and latest_5m["ema9"] < latest_5m["ema20"]
 
-            volume_ok = vol > (vol_avg * 1.25) if vol_avg > 0 else False
-            rsi_buy_ok = 50 <= rsi <= 68
-            rsi_sell_ok = 32 <= rsi <= 50
-            vwap_buy_ok = price > vwap
+            volume_ok    = vol > (vol_avg * 1.2) if vol_avg > 0 else False  # was 1.25
+            rsi_buy_ok   = 48 <= rsi <= 70   # was 50-68
+            rsi_sell_ok  = 30 <= rsi <= 52   # was 32-50
+            vwap_buy_ok  = price > vwap
             vwap_sell_ok = price < vwap
 
-            liq_long = liquidity_sweep_long(df_5m, 20)
-            liq_short = liquidity_sweep_short(df_5m, 20)
-            bos_long = break_of_structure_long(df_5m, 10)
-            bos_short = break_of_structure_short(df_5m, 10)
-            trap_long = fake_breakdown_trap_long(df_5m, 20)
+            liq_long   = liquidity_sweep_long(df_5m, 20)
+            liq_short  = liquidity_sweep_short(df_5m, 20)
+            bos_long   = break_of_structure_long(df_5m, 10)
+            bos_short  = break_of_structure_short(df_5m, 10)
+            trap_long  = fake_breakdown_trap_long(df_5m, 20)
             trap_short = fake_breakout_trap_short(df_5m, 20)
             bull_candle = strong_bullish_candle(df_5m)
             bear_candle = strong_bearish_candle(df_5m)
 
-            recent_high = df_5m["high"].iloc[-22:-2].max()
-            recent_low = df_5m["low"].iloc[-22:-2].min()
+            # At least one price-action confirmation required (replaces hard liq_long requirement)
+            pa_long_ok  = liq_long  or trap_long  or bos_long
+            pa_short_ok = liq_short or trap_short or bos_short
 
-            room_long = enough_room_long(price, recent_high + atr, atr) if atr > 0 else False
-            room_short = enough_room_short(price, recent_low - atr, atr) if atr > 0 else False
+            # Room to target (fixed calculation)
+            target_long  = price + (2.2 * atr)
+            target_short = price - (2.2 * atr)
+            room_long  = enough_room_long(price, target_long, atr)   if atr > 0 else False
+            room_short = enough_room_short(price, target_short, atr) if atr > 0 else False
+
             choppy = is_choppy_market(price, ema9, ema20, atr)
 
-            btc_buy_ok = True if symbol == "BTCUSDT" else btc_bias in ["bull", "neutral"]
+            btc_buy_ok  = True if symbol == "BTCUSDT" else btc_bias in ["bull", "neutral"]
             btc_sell_ok = True if symbol == "BTCUSDT" else btc_bias in ["bear", "neutral"]
 
             # -------------------------
             # SCORE ENGINE
             # -------------------------
             long_score = 0
-            if trend_1h_bull: long_score += 2
+            if trend_1h_bull:  long_score += 2
             if trend_15m_bull: long_score += 2
-            if liq_long: long_score += 2
-            if trap_long: long_score += 1
-            if bos_long: long_score += 1
-            if fresh_bull: long_score += 1
-            if vwap_buy_ok: long_score += 1
-            if rsi_buy_ok: long_score += 1
-            if volume_ok: long_score += 1
-            if bull_candle: long_score += 1
-            if room_long: long_score += 1
-            if btc_buy_ok: long_score += 1
-            if choppy: long_score -= 3
+            if liq_long:       long_score += 2
+            if trap_long:      long_score += 1
+            if bos_long:       long_score += 1
+            if fresh_bull:     long_score += 1   # optional now
+            if vwap_buy_ok:    long_score += 1
+            if rsi_buy_ok:     long_score += 1
+            if volume_ok:      long_score += 1
+            if bull_candle:    long_score += 1
+            if room_long:      long_score += 1
+            if btc_buy_ok:     long_score += 1
+            if choppy:         long_score -= 3
 
             short_score = 0
-            if trend_1h_bear: short_score += 2
+            if trend_1h_bear:  short_score += 2
             if trend_15m_bear: short_score += 2
-            if liq_short: short_score += 2
-            if trap_short: short_score += 1
-            if bos_short: short_score += 1
-            if fresh_bear: short_score += 1
-            if vwap_sell_ok: short_score += 1
-            if rsi_sell_ok: short_score += 1
-            if volume_ok: short_score += 1
-            if bear_candle: short_score += 1
-            if room_short: short_score += 1
-            if btc_sell_ok: short_score += 1
-            if choppy: short_score -= 3
+            if liq_short:      short_score += 2
+            if trap_short:     short_score += 1
+            if bos_short:      short_score += 1
+            if fresh_bear:     short_score += 1  # optional now
+            if vwap_sell_ok:   short_score += 1
+            if rsi_sell_ok:    short_score += 1
+            if volume_ok:      short_score += 1
+            if bear_candle:    short_score += 1
+            if room_short:     short_score += 1
+            if btc_sell_ok:    short_score += 1
+            if choppy:         short_score -= 3
 
             # Session boost/penalty
             if session_strength == "HIGH":
-                long_score += 1
+                long_score  += 1
                 short_score += 1
             elif session_strength == "LOW":
-                long_score -= 1
+                long_score  -= 1
                 short_score -= 1
 
-            long_grade = grade_signal(long_score)
+            long_grade  = grade_signal(long_score)
             short_grade = grade_signal(short_score)
 
-            # harder outside best hours
-            min_score_required = 8 if session_strength == "HIGH" else 9 if session_strength == "MID" else 10
+            # Score thresholds by session
+            # HIGH: 7, MID: 8, LOW: 9
+            min_score = 7 if session_strength == "HIGH" else 8 if session_strength == "MID" else 9
 
-            # dead hours need real confirmation
-            extra_low_session_long_ok = True
-            if session_strength == "LOW":
-                extra_low_session_long_ok = bos_long or trap_long or bull_candle
-
-            extra_low_session_short_ok = True
-            if session_strength == "LOW":
-                extra_low_session_short_ok = bos_short or trap_short or bear_candle
-
-            # A+ only mode
-            grade_buy_ok = long_grade == "A+" if A_PLUS_ONLY_MODE else long_grade in ["A+", "A"]
+            grade_buy_ok  = long_grade  == "A+" if A_PLUS_ONLY_MODE else long_grade  in ["A+", "A"]
             grade_sell_ok = short_grade == "A+" if A_PLUS_ONLY_MODE else short_grade in ["A+", "A"]
 
+            # -------------------------
+            # SIGNAL GATES
+            # Hard requirements (non-negotiable):
+            #   - trend alignment on 1h AND 15m
+            #   - at least one PA confirmation (liq/trap/bos)
+            #   - above VWAP (buy) / below VWAP (sell)
+            #   - room to target
+            #   - not choppy
+            #   - score >= threshold
+            # Optional (score points only):
+            #   - fresh EMA crossover
+            #   - volume spike
+            #   - RSI zone
+            #   - BTC filter (still a gate but neutral = ok)
+            # -------------------------
             buy_signal = (
-                long_score >= min_score_required and
+                long_score >= min_score and
                 grade_buy_ok and
                 atr > 0 and
                 not choppy and
                 trend_1h_bull and
                 trend_15m_bull and
-                liq_long and
-                fresh_bull and
+                pa_long_ok and
                 vwap_buy_ok and
                 room_long and
-                btc_buy_ok and
-                extra_low_session_long_ok
+                btc_buy_ok
             )
 
             sell_signal = (
-                short_score >= min_score_required and
+                short_score >= min_score and
                 grade_sell_ok and
                 atr > 0 and
                 not choppy and
                 trend_1h_bear and
                 trend_15m_bear and
-                liq_short and
-                fresh_bear and
+                pa_short_ok and
                 vwap_sell_ok and
                 room_short and
-                btc_sell_ok and
-                extra_low_session_short_ok
+                btc_sell_ok
             )
 
+            # --- Diagnostic logging ---
+            blockers_long = []
+            if long_score < min_score:     blockers_long.append(f"score {long_score}<{min_score}")
+            if not grade_buy_ok:           blockers_long.append(f"grade {long_grade}")
+            if atr <= 0:                   blockers_long.append("atr=0")
+            if choppy:                     blockers_long.append("choppy")
+            if not trend_1h_bull:          blockers_long.append("1h bearish")
+            if not trend_15m_bull:         blockers_long.append("15m bearish")
+            if not pa_long_ok:             blockers_long.append("no PA confirm")
+            if not vwap_buy_ok:            blockers_long.append("below VWAP")
+            if not room_long:              blockers_long.append("no room")
+            if not btc_buy_ok:             blockers_long.append("btc bearish")
+
+            blockers_short = []
+            if short_score < min_score:    blockers_short.append(f"score {short_score}<{min_score}")
+            if not grade_sell_ok:          blockers_short.append(f"grade {short_grade}")
+            if atr <= 0:                   blockers_short.append("atr=0")
+            if choppy:                     blockers_short.append("choppy")
+            if not trend_1h_bear:          blockers_short.append("1h bullish")
+            if not trend_15m_bear:         blockers_short.append("15m bullish")
+            if not pa_short_ok:            blockers_short.append("no PA confirm")
+            if not vwap_sell_ok:           blockers_short.append("above VWAP")
+            if not room_short:             blockers_short.append("no room")
+            if not btc_sell_ok:            blockers_short.append("btc bullish")
+
+            scan_log.append({
+                "symbol": symbol,
+                "long_score": long_score,
+                "short_score": short_score,
+                "blockers_long": blockers_long,
+                "blockers_short": blockers_short,
+            })
+
             if buy_signal:
-                entry = price
-                stop = round(entry - (1.2 * atr), 4)
-                target = round(entry + (2.2 * atr), 4)
-                rr = calculate_risk_reward(entry, stop, target)
-                qty = get_crypto_qty(symbol, entry, stop)
+                entry     = price
+                stop      = round(entry - (1.2 * atr), 4)
+                target    = round(entry + (2.2 * atr), 4)
+                rr        = calculate_risk_reward(entry, stop, target)
+                qty       = get_crypto_qty(symbol, entry, stop)
                 timestamp = datetime.now(ZoneInfo("America/Chicago")).strftime("%Y-%m-%d %H:%M:%S")
                 alert_key = f"{symbol}-BUY-{str(df_5m.iloc[-1]['timestamp'])}"
 
                 if alert_key not in sent_alerts:
                     sent_alerts.add(alert_key)
-
+                    pa_flags = f"liq={liq_long} trap={trap_long} bos={bos_long}"
                     msg = (
-                        f"🔥 {long_grade} ELITE CRYPTO BUY\n"
+                        f"🔥 {long_grade} CRYPTO BUY\n"
                         f"Ticker: {symbol}\n"
                         f"Session: {session_strength}\n"
                         f"Entry: {entry:.4f}\n"
@@ -968,35 +1018,33 @@ def scan_crypto_intraday():
                         f"RSI: {rsi:.2f}\n"
                         f"VWAP: {vwap:.4f}\n"
                         f"ATR: {atr:.4f}\n"
-                        f"BTC Filter: {btc_bias}\n"
-                        f"Score: {long_score}\n\n"
-                        f"🚀 BYBIT APPROVAL COMMAND:\n"
-                        f"TRADE {symbol} BUY {qty} {stop} {target}"
+                        f"BTC: {btc_bias}\n"
+                        f"Score: {long_score} | {pa_flags}\n\n"
+                        f"🚀 BYBIT:\nTRADE {symbol} BUY {qty} {stop} {target}"
                     )
-
                     send_telegram_message(msg)
                     log_signal(
                         timestamp, symbol, "crypto", "BUY", "5m/15m/1h",
                         entry, stop, target, round(rsi, 2), round(vwap, 4),
                         round(atr, 4), long_score, long_grade, session_strength, rr,
-                        "Elite long: liquidity + structure + BTC filter + ATR + session filter"
+                        f"V13 long: {pa_flags}"
                     )
-                    print(f"Sent {long_grade} BUY alert for {symbol}")
+                    print(f"Sent {long_grade} BUY for {symbol}")
 
             elif sell_signal:
-                entry = price
-                stop = round(entry + (1.2 * atr), 4)
-                target = round(entry - (2.2 * atr), 4)
-                rr = calculate_risk_reward(entry, stop, target)
-                qty = get_crypto_qty(symbol, entry, stop)
+                entry     = price
+                stop      = round(entry + (1.2 * atr), 4)
+                target    = round(entry - (2.2 * atr), 4)
+                rr        = calculate_risk_reward(entry, stop, target)
+                qty       = get_crypto_qty(symbol, entry, stop)
                 timestamp = datetime.now(ZoneInfo("America/Chicago")).strftime("%Y-%m-%d %H:%M:%S")
                 alert_key = f"{symbol}-SELL-{str(df_5m.iloc[-1]['timestamp'])}"
 
                 if alert_key not in sent_alerts:
                     sent_alerts.add(alert_key)
-
+                    pa_flags = f"liq={liq_short} trap={trap_short} bos={bos_short}"
                     msg = (
-                        f"🔻 {short_grade} ELITE CRYPTO SELL\n"
+                        f"🔻 {short_grade} CRYPTO SELL\n"
                         f"Ticker: {symbol}\n"
                         f"Session: {session_strength}\n"
                         f"Entry: {entry:.4f}\n"
@@ -1007,27 +1055,23 @@ def scan_crypto_intraday():
                         f"RSI: {rsi:.2f}\n"
                         f"VWAP: {vwap:.4f}\n"
                         f"ATR: {atr:.4f}\n"
-                        f"BTC Filter: {btc_bias}\n"
-                        f"Score: {short_score}\n\n"
-                        f"🚀 BYBIT APPROVAL COMMAND:\n"
-                        f"TRADE {symbol} SELL {qty} {stop} {target}"
+                        f"BTC: {btc_bias}\n"
+                        f"Score: {short_score} | {pa_flags}\n\n"
+                        f"🚀 BYBIT:\nTRADE {symbol} SELL {qty} {stop} {target}"
                     )
-
                     send_telegram_message(msg)
                     log_signal(
                         timestamp, symbol, "crypto", "SELL", "5m/15m/1h",
                         entry, stop, target, round(rsi, 2), round(vwap, 4),
                         round(atr, 4), short_score, short_grade, session_strength, rr,
-                        "Elite short: liquidity + structure + BTC filter + ATR + session filter"
+                        f"V13 short: {pa_flags}"
                     )
-                    print(f"Sent {short_grade} SELL alert for {symbol}")
+                    print(f"Sent {short_grade} SELL for {symbol}")
 
             else:
                 print(
-                    f"{symbol}: no elite setup | "
-                    f"price={price:.4f}, ema9={ema9:.4f}, ema20={ema20:.4f}, "
-                    f"rsi={rsi:.2f}, vwap={vwap:.4f}, atr={atr:.4f}, "
-                    f"long_score={long_score}, short_score={short_score}, choppy={choppy}"
+                    f"{symbol}: no signal | long={long_score} short={short_score} | "
+                    f"choppy={choppy} pa_long={pa_long_ok} pa_short={pa_short_ok}"
                 )
 
         except Exception as e:
@@ -1036,157 +1080,187 @@ def scan_crypto_intraday():
 # =========================================================
 # STOCK SCANNER
 # =========================================================
-def analyze_intraday_symbol(ticker: str, asset_type: str):
+def analyze_intraday_symbol(ticker: str, asset_type: str, scan_log: list):
     locked, lock_reason = is_daily_locked()
     if locked:
         print(f"Stock scan blocked: {lock_reason}")
         return
 
-    df_5m = get_data(ticker, interval="5m", period="5d")
+    df_5m  = get_data(ticker, interval="5m",  period="5d")
     df_15m = get_data(ticker, interval="15m", period="10d")
-    df_1h = get_data(ticker, interval="60m", period="30d")
+    df_1h  = get_data(ticker, interval="60m", period="30d")
 
     if df_5m.empty or df_15m.empty or df_1h.empty:
         print(f"{ticker}: missing timeframe data")
         return
 
-    close_5m = to_series(df_5m["Close"]).dropna()
+    close_5m  = to_series(df_5m["Close"]).dropna()
     volume_5m = to_series(df_5m["Volume"]).dropna()
     close_15m = to_series(df_15m["Close"]).dropna()
-    close_1h = to_series(df_1h["Close"]).dropna()
+    close_1h  = to_series(df_1h["Close"]).dropna()
 
     if len(close_5m) < 60 or len(volume_5m) < 60 or len(close_15m) < 60 or len(close_1h) < 60:
-        print(f"{ticker}: not enough cleaned data")
+        print(f"{ticker}: not enough data")
         return
 
-    ema9_5m = close_5m.ewm(span=9, adjust=False).mean()
-    ema20_5m = close_5m.ewm(span=20, adjust=False).mean()
-    rsi_5m = compute_rsi(close_5m, 14)
+    ema9_5m   = close_5m.ewm(span=9,  adjust=False).mean()
+    ema20_5m  = close_5m.ewm(span=20, adjust=False).mean()
+    rsi_5m    = compute_rsi(close_5m, 14)
     vol_avg_5m = volume_5m.rolling(20).mean()
-    vwap_5m = compute_vwap_yf(df_5m)
-    atr_5m = compute_atr_yf(df_5m, 14)
+    vwap_5m   = compute_vwap_yf(df_5m)
+    atr_5m    = compute_atr_yf(df_5m, 14)
 
     ema20_15m = close_15m.ewm(span=20, adjust=False).mean()
-    ema20_1h = close_1h.ewm(span=20, adjust=False).mean()
+    ema20_1h  = close_1h.ewm(span=20,  adjust=False).mean()
 
-    last_price = float(close_5m.iloc[-1])
-    last_ema9_5m = float(ema9_5m.iloc[-1])
+    last_price    = float(close_5m.iloc[-1])
+    last_ema9_5m  = float(ema9_5m.iloc[-1])
     last_ema20_5m = float(ema20_5m.iloc[-1])
-    prev_ema9_5m = float(ema9_5m.iloc[-2])
+    prev_ema9_5m  = float(ema9_5m.iloc[-2])
     prev_ema20_5m = float(ema20_5m.iloc[-2])
-    last_rsi_5m = float(rsi_5m.iloc[-1])
-    last_vol_5m = float(volume_5m.iloc[-1])
+    last_rsi_5m   = float(rsi_5m.iloc[-1])
+    last_vol_5m   = float(volume_5m.iloc[-1])
     last_vol_avg_5m = float(vol_avg_5m.iloc[-1]) if pd.notna(vol_avg_5m.iloc[-1]) else 0
-    last_vwap_5m = float(vwap_5m.iloc[-1]) if pd.notna(vwap_5m.iloc[-1]) else last_price
-    last_atr_5m = float(atr_5m.iloc[-1]) if pd.notna(atr_5m.iloc[-1]) else 0
+    last_vwap_5m  = float(vwap_5m.iloc[-1])  if pd.notna(vwap_5m.iloc[-1])  else last_price
+    last_atr_5m   = float(atr_5m.iloc[-1])   if pd.notna(atr_5m.iloc[-1])   else 0
 
     trend_15m_bull = float(close_15m.iloc[-1]) > float(ema20_15m.iloc[-1])
     trend_15m_bear = float(close_15m.iloc[-1]) < float(ema20_15m.iloc[-1])
-    trend_1h_bull = float(close_1h.iloc[-1]) > float(ema20_1h.iloc[-1])
-    trend_1h_bear = float(close_1h.iloc[-1]) < float(ema20_1h.iloc[-1])
+    trend_1h_bull  = float(close_1h.iloc[-1])  > float(ema20_1h.iloc[-1])
+    trend_1h_bear  = float(close_1h.iloc[-1])  < float(ema20_1h.iloc[-1])
 
     fresh_bullish_5m = prev_ema9_5m <= prev_ema20_5m and last_ema9_5m > last_ema20_5m
     fresh_bearish_5m = prev_ema9_5m >= prev_ema20_5m and last_ema9_5m < last_ema20_5m
 
     df_liq = pd.DataFrame({
-        "open": to_series(df_5m["Open"]).astype(float),
-        "high": to_series(df_5m["High"]).astype(float),
-        "low": to_series(df_5m["Low"]).astype(float),
-        "close": to_series(df_5m["Close"]).astype(float),
+        "open":   to_series(df_5m["Open"]).astype(float),
+        "high":   to_series(df_5m["High"]).astype(float),
+        "low":    to_series(df_5m["Low"]).astype(float),
+        "close":  to_series(df_5m["Close"]).astype(float),
         "volume": to_series(df_5m["Volume"]).astype(float),
     })
 
-    liq_long = liquidity_sweep_long(df_liq, 20)
-    liq_short = liquidity_sweep_short(df_liq, 20)
-    bos_long = break_of_structure_long(df_liq, 10)
-    bos_short = break_of_structure_short(df_liq, 10)
-    trap_long = fake_breakdown_trap_long(df_liq, 20)
+    liq_long   = liquidity_sweep_long(df_liq, 20)
+    liq_short  = liquidity_sweep_short(df_liq, 20)
+    bos_long   = break_of_structure_long(df_liq, 10)
+    bos_short  = break_of_structure_short(df_liq, 10)
+    trap_long  = fake_breakdown_trap_long(df_liq, 20)
     trap_short = fake_breakout_trap_short(df_liq, 20)
     bull_candle = strong_bullish_candle(df_liq)
     bear_candle = strong_bearish_candle(df_liq)
 
-    recent_high = df_liq["high"].iloc[-22:-2].max()
-    recent_low = df_liq["low"].iloc[-22:-2].min()
+    pa_long_ok  = liq_long  or trap_long  or bos_long
+    pa_short_ok = liq_short or trap_short or bos_short
 
-    volume_ok = last_vol_5m > (last_vol_avg_5m * 1.25) if last_vol_avg_5m > 0 else False
-    rsi_buy_ok = 52 <= last_rsi_5m <= 68
-    rsi_sell_ok = 32 <= last_rsi_5m <= 50
-    vwap_buy_ok = last_price > last_vwap_5m
+    target_long  = last_price + (2.2 * last_atr_5m)
+    target_short = last_price - (2.2 * last_atr_5m)
+    room_long  = enough_room_long(last_price, target_long, last_atr_5m)   if last_atr_5m > 0 else False
+    room_short = enough_room_short(last_price, target_short, last_atr_5m) if last_atr_5m > 0 else False
+
+    volume_ok    = last_vol_5m > (last_vol_avg_5m * 1.2) if last_vol_avg_5m > 0 else False
+    rsi_buy_ok   = 48 <= last_rsi_5m <= 70
+    rsi_sell_ok  = 30 <= last_rsi_5m <= 52
+    vwap_buy_ok  = last_price > last_vwap_5m
     vwap_sell_ok = last_price < last_vwap_5m
-    room_long = enough_room_long(last_price, recent_high + last_atr_5m, last_atr_5m) if last_atr_5m > 0 else False
-    room_short = enough_room_short(last_price, recent_low - last_atr_5m, last_atr_5m) if last_atr_5m > 0 else False
-    choppy = is_choppy_market(last_price, last_ema9_5m, last_ema20_5m, last_atr_5m)
+    choppy       = is_choppy_market(last_price, last_ema9_5m, last_ema20_5m, last_atr_5m)
 
     long_score = 0
-    if trend_1h_bull: long_score += 2
-    if trend_15m_bull: long_score += 2
-    if liq_long: long_score += 2
-    if trap_long: long_score += 1
-    if bos_long: long_score += 1
-    if fresh_bullish_5m: long_score += 1
-    if vwap_buy_ok: long_score += 1
-    if rsi_buy_ok: long_score += 1
-    if volume_ok: long_score += 1
-    if bull_candle: long_score += 1
-    if room_long: long_score += 1
-    if choppy: long_score -= 3
+    if trend_1h_bull:     long_score += 2
+    if trend_15m_bull:    long_score += 2
+    if liq_long:          long_score += 2
+    if trap_long:         long_score += 1
+    if bos_long:          long_score += 1
+    if fresh_bullish_5m:  long_score += 1
+    if vwap_buy_ok:       long_score += 1
+    if rsi_buy_ok:        long_score += 1
+    if volume_ok:         long_score += 1
+    if bull_candle:       long_score += 1
+    if room_long:         long_score += 1
+    if choppy:            long_score -= 3
 
     short_score = 0
-    if trend_1h_bear: short_score += 2
-    if trend_15m_bear: short_score += 2
-    if liq_short: short_score += 2
-    if trap_short: short_score += 1
-    if bos_short: short_score += 1
-    if fresh_bearish_5m: short_score += 1
-    if vwap_sell_ok: short_score += 1
-    if rsi_sell_ok: short_score += 1
-    if volume_ok: short_score += 1
-    if bear_candle: short_score += 1
-    if room_short: short_score += 1
-    if choppy: short_score -= 3
+    if trend_1h_bear:     short_score += 2
+    if trend_15m_bear:    short_score += 2
+    if liq_short:         short_score += 2
+    if trap_short:        short_score += 1
+    if bos_short:         short_score += 1
+    if fresh_bearish_5m:  short_score += 1
+    if vwap_sell_ok:      short_score += 1
+    if rsi_sell_ok:       short_score += 1
+    if volume_ok:         short_score += 1
+    if bear_candle:       short_score += 1
+    if room_short:        short_score += 1
+    if choppy:            short_score -= 3
 
-    long_grade = grade_signal(long_score)
+    long_grade  = grade_signal(long_score)
     short_grade = grade_signal(short_score)
-    timestamp = datetime.now(ZoneInfo("America/Chicago")).strftime("%Y-%m-%d %H:%M:%S")
+    timestamp   = datetime.now(ZoneInfo("America/Chicago")).strftime("%Y-%m-%d %H:%M:%S")
 
-    grade_buy_ok = long_grade == "A+" if A_PLUS_ONLY_MODE else long_grade in ["A+", "A"]
+    grade_buy_ok  = long_grade  == "A+" if A_PLUS_ONLY_MODE else long_grade  in ["A+", "A"]
     grade_sell_ok = short_grade == "A+" if A_PLUS_ONLY_MODE else short_grade in ["A+", "A"]
 
     bullish = (
         grade_buy_ok and last_atr_5m > 0 and not choppy and
-        trend_1h_bull and trend_15m_bull and liq_long and fresh_bullish_5m and
-        vwap_buy_ok and room_long
+        trend_1h_bull and trend_15m_bull and
+        pa_long_ok and vwap_buy_ok and room_long
     )
 
     bearish = (
         grade_sell_ok and last_atr_5m > 0 and not choppy and
-        trend_1h_bear and trend_15m_bear and liq_short and fresh_bearish_5m and
-        vwap_sell_ok and room_short
+        trend_1h_bear and trend_15m_bear and
+        pa_short_ok and vwap_sell_ok and room_short
     )
+
+    # Diagnostic
+    blockers_long = []
+    if not grade_buy_ok:     blockers_long.append(f"grade {long_grade}")
+    if last_atr_5m <= 0:     blockers_long.append("atr=0")
+    if choppy:               blockers_long.append("choppy")
+    if not trend_1h_bull:    blockers_long.append("1h bearish")
+    if not trend_15m_bull:   blockers_long.append("15m bearish")
+    if not pa_long_ok:       blockers_long.append("no PA confirm")
+    if not vwap_buy_ok:      blockers_long.append("below VWAP")
+    if not room_long:        blockers_long.append("no room")
+
+    blockers_short = []
+    if not grade_sell_ok:    blockers_short.append(f"grade {short_grade}")
+    if last_atr_5m <= 0:     blockers_short.append("atr=0")
+    if choppy:               blockers_short.append("choppy")
+    if not trend_1h_bear:    blockers_short.append("1h bullish")
+    if not trend_15m_bear:   blockers_short.append("15m bullish")
+    if not pa_short_ok:      blockers_short.append("no PA confirm")
+    if not vwap_sell_ok:     blockers_short.append("above VWAP")
+    if not room_short:       blockers_short.append("no room")
+
+    scan_log.append({
+        "symbol": ticker,
+        "long_score": long_score,
+        "short_score": short_score,
+        "blockers_long": blockers_long,
+        "blockers_short": blockers_short,
+    })
 
     if bullish:
         alert_key = f"{ticker}-BUY-{str(close_5m.index[-1])}"
         if alert_key not in sent_alerts:
             sent_alerts.add(alert_key)
-
-            stop = round(last_price - (1.2 * last_atr_5m), 4)
+            stop   = round(last_price - (1.2 * last_atr_5m), 4)
             target = round(last_price + (2.2 * last_atr_5m), 4)
-            rr = calculate_risk_reward(last_price, stop, target)
-            setup = "Elite stock long: 1H+15m trend + 5m liquidity reclaim + BOS + VWAP + ATR"
-
+            rr     = calculate_risk_reward(last_price, stop, target)
+            pa_flags = f"liq={liq_long} trap={trap_long} bos={bos_long}"
+            setup  = f"V13 stock long: {pa_flags}"
             msg = (
-                f"🔥 {long_grade} ELITE STOCK BUY\n"
+                f"🔥 {long_grade} STOCK BUY\n"
                 f"Ticker: {ticker}\n"
                 f"Entry: {last_price:.4f}\n"
                 f"Stop: {stop:.4f}\n"
                 f"Target: {target:.4f}\n"
                 f"R:R: {rr}\n"
-                f"RSI(5m): {last_rsi_5m:.2f}\n"
+                f"RSI: {last_rsi_5m:.2f}\n"
                 f"VWAP: {last_vwap_5m:.4f}\n"
                 f"ATR: {last_atr_5m:.4f}\n"
-                f"Score: {long_score}"
+                f"Score: {long_score} | {pa_flags}"
             )
-
             send_telegram_message(msg)
             log_signal(
                 timestamp, ticker, "stock", "BUY", "5m/15m/1h",
@@ -1194,31 +1268,29 @@ def analyze_intraday_symbol(ticker: str, asset_type: str):
                 round(last_vwap_5m, 4), round(last_atr_5m, 4),
                 long_score, long_grade, "STOCK_SESSION", rr, setup
             )
-            print(f"Sent elite BUY alert for {ticker}")
+            print(f"Sent BUY for {ticker}")
 
     elif bearish:
         alert_key = f"{ticker}-SELL-{str(close_5m.index[-1])}"
         if alert_key not in sent_alerts:
             sent_alerts.add(alert_key)
-
-            stop = round(last_price + (1.2 * last_atr_5m), 4)
+            stop   = round(last_price + (1.2 * last_atr_5m), 4)
             target = round(last_price - (2.2 * last_atr_5m), 4)
-            rr = calculate_risk_reward(last_price, stop, target)
-            setup = "Elite stock short: 1H+15m trend + 5m liquidity rejection + BOS + VWAP + ATR"
-
+            rr     = calculate_risk_reward(last_price, stop, target)
+            pa_flags = f"liq={liq_short} trap={trap_short} bos={bos_short}"
+            setup  = f"V13 stock short: {pa_flags}"
             msg = (
-                f"🔻 {short_grade} ELITE STOCK SELL\n"
+                f"🔻 {short_grade} STOCK SELL\n"
                 f"Ticker: {ticker}\n"
                 f"Entry: {last_price:.4f}\n"
                 f"Stop: {stop:.4f}\n"
                 f"Target: {target:.4f}\n"
                 f"R:R: {rr}\n"
-                f"RSI(5m): {last_rsi_5m:.2f}\n"
+                f"RSI: {last_rsi_5m:.2f}\n"
                 f"VWAP: {last_vwap_5m:.4f}\n"
                 f"ATR: {last_atr_5m:.4f}\n"
-                f"Score: {short_score}"
+                f"Score: {short_score} | {pa_flags}"
             )
-
             send_telegram_message(msg)
             log_signal(
                 timestamp, ticker, "stock", "SELL", "5m/15m/1h",
@@ -1226,14 +1298,12 @@ def analyze_intraday_symbol(ticker: str, asset_type: str):
                 round(last_vwap_5m, 4), round(last_atr_5m, 4),
                 short_score, short_grade, "STOCK_SESSION", rr, setup
             )
-            print(f"Sent elite SELL alert for {ticker}")
+            print(f"Sent SELL for {ticker}")
 
     else:
         print(
-            f"{ticker}: no elite setup | "
-            f"price={last_price:.4f}, ema9={last_ema9_5m:.4f}, ema20={last_ema20_5m:.4f}, "
-            f"rsi={last_rsi_5m:.2f}, vwap={last_vwap_5m:.4f}, atr={last_atr_5m:.4f}, "
-            f"long_score={long_score}, short_score={short_score}, choppy={choppy}"
+            f"{ticker}: no signal | long={long_score} short={short_score} | "
+            f"choppy={choppy} pa_long={pa_long_ok} pa_short={pa_short_ok}"
         )
 
 # =========================================================
@@ -1247,40 +1317,46 @@ def main():
     ensure_daily_lock_file()
     ensure_pair_stats_file()
 
-    send_telegram_message("✅ Scanner bot V12 DEBT-SURVIVAL started")
-    print("Bot started successfully. Entering main loop...")
+    send_telegram_message("✅ Scanner bot V13 started")
+    print("Bot V13 started. Entering main loop...")
 
     last_report_day = None
+    cycle_count = 0
 
     while True:
-        print("Running new scan cycle...")
+        print(f"\n--- Scan cycle {cycle_count + 1} ---")
+        scan_log = []  # reset each cycle
 
         try:
-            # 1) update old trade outcomes
             update_signal_results()
 
-            # 2) stocks (only market hours)
             if is_stock_market_open():
                 for ticker in STOCK_TICKERS:
                     try:
-                        analyze_intraday_symbol(ticker, "stock")
+                        analyze_intraday_symbol(ticker, "stock", scan_log)
                     except Exception as e:
                         print(f"Error on stock {ticker}: {e}")
             else:
-                print("Stock market is closed. Skipping stock scan.")
+                print("Stock market closed. Skipping stocks.")
 
-            # 3) crypto (24/7)
             try:
-                scan_crypto_intraday()
+                scan_crypto_intraday(scan_log)
             except Exception as e:
                 print(f"Error in crypto scan: {e}")
 
-            # 4) daily report once per day
+            # Daily report
             now = datetime.now(ZoneInfo("America/Chicago"))
             if now.hour == 20 and now.minute < 5:
                 if last_report_day != now.date():
                     send_daily_stats_report()
                     last_report_day = now.date()
+
+            # Periodic diagnostic report
+            cycle_count += 1
+            if DIAGNOSTIC_EVERY_N_CYCLES > 0 and cycle_count % DIAGNOSTIC_EVERY_N_CYCLES == 0:
+                diag = build_diagnostic_report(scan_log)
+                send_telegram_message(diag)
+                print("Sent diagnostic report.")
 
         except Exception as e:
             print(f"Main loop error: {e}")

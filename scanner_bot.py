@@ -382,11 +382,16 @@ def is_stock_market_open() -> bool:
 # DATA FETCH
 # =========================================================
 def get_data(ticker: str, interval: str, period: str) -> pd.DataFrame:
-    return yf.download(
+    df = yf.download(
         ticker, period=period, interval=interval,
         auto_adjust=True, progress=False,
         group_by="column", threads=False,
     )
+    # Newer yfinance returns MultiIndex columns like ('Close', 'AAPL')
+    # Flatten to single level so the rest of the code works unchanged
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    return df
 
 def get_bybit_klines(symbol: str, interval: str, limit: int = 200):
     try:
@@ -796,9 +801,42 @@ def build_signal(
     bull_candle = strong_bullish_candle(df_5m)
     bear_candle = strong_bearish_candle(df_5m)
 
-    # At least one PA confirmation required (still a hard gate)
-    pa_long_ok  = liq_long  or trap_long  or bos_long
-    pa_short_ok = liq_short or trap_short or bos_short
+    # PA confirmation: current candle OR any of the last 3 candles
+    # Catches setups where the sweep/BOS happened 1-2 bars ago
+    def _pa_long_recent(lookback=3):
+        for i in range(lookback):
+            end = len(df_5m) - i
+            if end < 30:
+                break
+            low_window  = df_5m["low"].iloc[end-21:end-1]
+            high_window = df_5m["high"].iloc[end-12:end-1]
+            cur_low     = df_5m["low"].iloc[end-1]
+            cur_close   = df_5m["close"].iloc[end-1]
+            cur_high    = df_5m["high"].iloc[end-1]
+            sweep = cur_low < low_window.min() and cur_close > low_window.min()
+            bos   = cur_close > high_window.max()
+            if sweep or bos:
+                return True
+        return False
+
+    def _pa_short_recent(lookback=3):
+        for i in range(lookback):
+            end = len(df_5m) - i
+            if end < 30:
+                break
+            high_window = df_5m["high"].iloc[end-21:end-1]
+            low_window  = df_5m["low"].iloc[end-12:end-1]
+            cur_high    = df_5m["high"].iloc[end-1]
+            cur_close   = df_5m["close"].iloc[end-1]
+            cur_low     = df_5m["low"].iloc[end-1]
+            sweep = cur_high > high_window.max() and cur_close < high_window.max()
+            bos   = cur_close < low_window.min()
+            if sweep or bos:
+                return True
+        return False
+
+    pa_long_ok  = _pa_long_recent()
+    pa_short_ok = _pa_short_recent()
 
     fresh_bull = float(prev["ema9"]) <= float(prev["ema20"]) and ema9 > ema20
     fresh_bear = float(prev["ema9"]) >= float(prev["ema20"]) and ema9 < ema20

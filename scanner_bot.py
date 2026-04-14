@@ -857,7 +857,7 @@ def read_daily_lock() -> dict:
                 "cooldown_until": str(row["cooldown_until"]) if pd.notna(row["cooldown_until"]) else ""
             }
     except: pass
-    return {"date": today, "loss_count": 0, "daily_risk_used": 0.0, "cooldown_until": ""}
+    return {"date","loss_count_crypto","loss_count_stock","risk_crypto","risk_stock","cooldown_until"}
 
 def write_daily_lock(loss_count, daily_risk_used, cooldown_until=""):
     ensure_daily_lock_file()

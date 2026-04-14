@@ -1493,7 +1493,7 @@ def build_signal(
 # CRYPTO SCANNER
 # =========================================================
 def scan_crypto_intraday(scan_log: list):
-    locked, reason = is_daily_locked()
+    locked, reason = is_daily_locked("crypto")
     if locked:
         print(f"Crypto locked: {reason}")
         return
@@ -1523,7 +1523,7 @@ def scan_crypto_intraday(scan_log: list):
 # STOCK SCANNER
 # =========================================================
 def scan_stock(ticker: str, scan_log: list):
-    locked, reason = is_daily_locked()
+    locked, reason = is_daily_locked("stock")
     if locked:
         print(f"Stock locked: {reason}")
         return

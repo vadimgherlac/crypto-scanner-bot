@@ -932,9 +932,18 @@ def is_coin_blacklisted(symbol: str) -> bool:
 # =========================================================
 def update_signal_results():
     ensure_signal_file()
-    try: df = pd.read_csv(SIGNALS_FILE)
-    except: return
-    if df.empty: return
+    try:
+        df = pd.read_csv(SIGNALS_FILE, dtype={
+            "status": str,
+            "closed_at": str,
+            "timestamp": str,
+        })
+    except:
+        return
+    if df.empty:
+        return
+    # Ensure closed_at column is object dtype so string timestamps can be assigned
+    df["closed_at"] = df["closed_at"].astype(object)
 
     updated = False
     now     = datetime.now(ZoneInfo("America/Chicago")).replace(tzinfo=None)

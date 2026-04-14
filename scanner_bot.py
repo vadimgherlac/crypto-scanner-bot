@@ -837,66 +837,132 @@ def log_signal(timestamp, symbol, asset_type, side, timeframe,
         ])
 
 # =========================================================
-# DAILY RISK LOCK
+# DAILY RISK LOCK (SPLIT: CRYPTO + STOCK)
 # =========================================================
+
+def ensure_daily_lock_file():
+    if not os.path.exists(DAILY_LOCK_FILE):
+        with open(DAILY_LOCK_FILE, "w", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerow([
+                "date",
+                "loss_count_crypto",
+                "loss_count_stock",
+                "risk_crypto",
+                "risk_stock",
+                "cooldown_until"
+            ])
+
 def get_today() -> str:
     return datetime.now(ZoneInfo("America/Chicago")).strftime("%Y-%m-%d")
 
 def read_daily_lock() -> dict:
     ensure_daily_lock_file()
     today = get_today()
+
     try:
-        df  = pd.read_csv(DAILY_LOCK_FILE)
+        df = pd.read_csv(DAILY_LOCK_FILE)
         row = df[df["date"] == today]
+
         if not row.empty:
             row = row.iloc[-1]
             return {
                 "date": today,
-                "loss_count": int(row["loss_count"]),
-                "daily_risk_used": float(row["daily_risk_used"]),
+                "loss_count_crypto": int(row["loss_count_crypto"]),
+                "loss_count_stock": int(row["loss_count_stock"]),
+                "risk_crypto": float(row["risk_crypto"]),
+                "risk_stock": float(row["risk_stock"]),
                 "cooldown_until": str(row["cooldown_until"]) if pd.notna(row["cooldown_until"]) else ""
             }
-    except: pass
-    return {"date","loss_count_crypto","loss_count_stock","risk_crypto","risk_stock","cooldown_until"}
+    except:
+        pass
 
-def write_daily_lock(loss_count, daily_risk_used, cooldown_until=""):
+    return {
+        "date": today,
+        "loss_count_crypto": 0,
+        "loss_count_stock": 0,
+        "risk_crypto": 0.0,
+        "risk_stock": 0.0,
+        "cooldown_until": ""
+    }
+
+def write_daily_lock(lock: dict):
     ensure_daily_lock_file()
     today = get_today()
-    rows  = []
+
+    rows = []
     try:
-        df   = pd.read_csv(DAILY_LOCK_FILE)
+        df = pd.read_csv(DAILY_LOCK_FILE)
         rows = df[df["date"] != today].values.tolist()
-    except: pass
-    rows.append([today, loss_count, daily_risk_used, cooldown_until])
+    except:
+        pass
+
+    rows.append([
+        today,
+        lock["loss_count_crypto"],
+        lock["loss_count_stock"],
+        lock["risk_crypto"],
+        lock["risk_stock"],
+        lock["cooldown_until"]
+    ])
+
     with open(DAILY_LOCK_FILE, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        w.writerow(["date","loss_count","daily_risk_used","cooldown_until"])
+        w.writerow([
+            "date",
+            "loss_count_crypto",
+            "loss_count_stock",
+            "risk_crypto",
+            "risk_stock",
+            "cooldown_until"
+        ])
         w.writerows(rows)
 
-def is_daily_locked():
-    lock     = read_daily_lock()
+def is_daily_locked(asset_type: str):
+    lock = read_daily_lock()
     max_risk = ACCOUNT_BALANCE * MAX_DAILY_RISK_PCT
-    if lock["loss_count"] >= MAX_LOSSES_PER_DAY:
-        return True, f"Max losses ({lock['loss_count']})"
-    if lock["daily_risk_used"] >= max_risk:
-        return True, f"Max risk ${lock['daily_risk_used']:.2f}"
+
+    if asset_type == "crypto":
+        if lock["loss_count_crypto"] >= MAX_LOSSES_PER_DAY:
+            return True, f"Crypto max losses ({lock['loss_count_crypto']})"
+        if lock["risk_crypto"] >= max_risk:
+            return True, f"Crypto max risk ${lock['risk_crypto']:.2f}"
+
+    if asset_type == "stock":
+        if lock["loss_count_stock"] >= MAX_LOSSES_PER_DAY:
+            return True, f"Stock max losses ({lock['loss_count_stock']})"
+        if lock["risk_stock"] >= max_risk:
+            return True, f"Stock max risk ${lock['risk_stock']:.2f}"
+
     if lock["cooldown_until"]:
         try:
             until = datetime.fromisoformat(lock["cooldown_until"])
-            if datetime.now(ZoneInfo("America/Chicago")).replace(tzinfo=None) < until:
+            now = datetime.now(ZoneInfo("America/Chicago")).replace(tzinfo=None)
+            if now < until:
                 return True, f"Cooldown until {until}"
-        except: pass
+        except:
+            pass
+
     return False, "OK"
 
-def register_loss():
-    lock     = read_daily_lock()
-    cooldown = (datetime.now(ZoneInfo("America/Chicago")).replace(tzinfo=None) +
-                timedelta(minutes=COOLDOWN_AFTER_LOSS_MINUTES)).isoformat()
-    write_daily_lock(
-        lock["loss_count"] + 1,
-        lock["daily_risk_used"] + ACCOUNT_BALANCE * RISK_PER_TRADE_PCT,
-        cooldown
-    )
+def register_loss(asset_type: str):
+    lock = read_daily_lock()
+
+    cooldown = (
+        datetime.now(ZoneInfo("America/Chicago")).replace(tzinfo=None) +
+        timedelta(minutes=COOLDOWN_AFTER_LOSS_MINUTES)
+    ).isoformat()
+
+    if asset_type == "crypto":
+        lock["loss_count_crypto"] += 1
+        lock["risk_crypto"] += ACCOUNT_BALANCE * RISK_PER_TRADE_PCT
+
+    elif asset_type == "stock":
+        lock["loss_count_stock"] += 1
+        lock["risk_stock"] += ACCOUNT_BALANCE * RISK_PER_TRADE_PCT
+
+    lock["cooldown_until"] = cooldown
+
+    write_daily_lock(lock)
 
 # =========================================================
 # PAIR STATS

@@ -1062,6 +1062,17 @@ def scan_crypto(scan_log: list):
 # =========================================================
 # STOCK SCANNER
 # =========================================================
+def yf_to_std(df_raw: pd.DataFrame) -> pd.DataFrame:
+    """Convert yfinance dataframe to standard format used by bot"""
+    return pd.DataFrame({
+        "timestamp": df_raw.index,
+        "open": df_raw["Open"].astype(float).values,
+        "high": df_raw["High"].astype(float).values,
+        "low": df_raw["Low"].astype(float).values,
+        "close": df_raw["Close"].astype(float).values,
+        "volume": df_raw["Volume"].astype(float).values,
+    }).dropna().reset_index(drop=True)
+
 def scan_stocks(scan_log: list):
     locked, reason = is_locked("stock")
     if locked:

@@ -81,7 +81,7 @@ SCORE_A_PLUS = 17
 SCORE_A      = 13
 
 # -- Diagnostic ──────────────────────────────────────────
-DIAGNOSTIC_EVERY_N_CYCLES = 30
+DIAGNOSTIC_EVERY_N_CYCLES = 0   # 0 = disabled (end-of-day report only)
 
 # -- Watchlists ───────────────────────────────────────────
 STOCK_TICKERS = [
@@ -418,10 +418,25 @@ def crypto_session() -> str:
     return "LOW"
 
 def stock_market_open() -> bool:
-    now  = datetime.now(ZoneInfo("America/New_York"))
-    if now.weekday() >= 5:
+    # Use UTC and manually account for ET offset to avoid tzdata issues on Railway.
+    # ET = UTC-5 (EST) or UTC-4 (EDT). We check both to be safe — NYSE is open
+    # 9:30–16:00 ET, so we gate at 9:45–15:45 to avoid bad data at open/close edges.
+    now_utc = datetime.utcnow()
+    if now_utc.weekday() >= 5:   # Saturday=5, Sunday=6
         return False
-    mins = now.hour * 60 + now.minute
+    # Determine EDT vs EST: EDT runs second Sunday of March through first Sunday of November
+    year = now_utc.year
+    # Find second Sunday of March
+    march1 = datetime(year, 3, 1)
+    first_sun_march = march1 + timedelta(days=(6 - march1.weekday()) % 7)
+    edt_start = first_sun_march + timedelta(weeks=1)   # second Sunday
+    # Find first Sunday of November
+    nov1 = datetime(year, 11, 1)
+    edt_end = nov1 + timedelta(days=(6 - nov1.weekday()) % 7)  # first Sunday
+    is_edt = edt_start <= now_utc.replace(hour=2, minute=0, second=0) < edt_end
+    offset = 4 if is_edt else 5
+    now_et = now_utc - timedelta(hours=offset)
+    mins = now_et.hour * 60 + now_et.minute
     return (9 * 60 + 45) <= mins <= (15 * 60 + 45)
 
 def grade(score: float) -> str:
@@ -946,7 +961,7 @@ def build_signal(
         tp2 = round(entry + 2.5 * risk, 5)
         rr  = calc_rr(entry, stop, tp2)
         if rr < MIN_RR:
-            print(f"{symbol} BUY: R:R {rr} < {MIN_RR}, skipped")
+
             return
         qty = get_qty(symbol, entry, stop) if asset_type == "crypto" else "N/A"
 
@@ -990,7 +1005,7 @@ def build_signal(
         tp2 = round(entry - 2.5 * risk, 5)
         rr  = calc_rr(entry, stop, tp2)
         if rr < MIN_RR:
-            print(f"{symbol} SELL: R:R {rr} < {MIN_RR}, skipped")
+
             return
         qty = get_qty(symbol, entry, stop) if asset_type == "crypto" else "N/A"
 
@@ -1024,12 +1039,7 @@ def build_signal(
                        round(short_score, 1), regime, short_grade, session, rr, setup)
             print(f"✅ {short_grade} SELL: {symbol} score={short_score:.1f} regime={regime} rr={rr}")
 
-    else:
-        print(f"{symbol} [{regime}]: no signal | "
-              f"L={long_score:.1f}({long_grade}) "
-              f"S={short_score:.1f}({short_grade}) | "
-              f"trend={'▲' if full_bull else '▼' if full_bear else '~'} "
-              f"adx={adx_val:.0f} choppy={choppy}")
+    # No signal — intentionally silent (reduce noise)
 
 # =========================================================
 # CRYPTO SCANNER
@@ -1037,23 +1047,20 @@ def build_signal(
 def scan_crypto(scan_log: list):
     locked, reason = is_locked("crypto")
     if locked:
-        print(f"Crypto locked: {reason}")
         return
 
     session  = crypto_session()
     btc_bias = get_btc_bias()
-    print(f"Session: {session} | BTC bias: {btc_bias}")
+    # session/btc logged only in signals
 
     for symbol in CRYPTO_SYMBOLS:
         try:
             if is_blacklisted(symbol):
-                print(f"{symbol}: blacklisted (low win rate)")
                 continue
             df_15m = get_bybit_klines(symbol, "15",  300)
             df_1h  = get_bybit_klines(symbol, "60",  200)
             df_4h  = get_bybit_klines(symbol, "240", 200)
             if any(d is None or len(d) < 80 for d in [df_15m, df_1h, df_4h]):
-                print(f"{symbol}: insufficient data")
                 continue
             build_signal(symbol, "crypto", df_15m, df_1h, df_4h, session, btc_bias, scan_log)
         except Exception as e:
@@ -1076,7 +1083,6 @@ def yf_to_std(df_raw: pd.DataFrame) -> pd.DataFrame:
 def scan_stocks(scan_log: list):
     locked, reason = is_locked("stock")
     if locked:
-        print(f"Stock locked: {reason}")
         return
 
     for ticker in STOCK_TICKERS:
@@ -1084,7 +1090,6 @@ def scan_stocks(scan_log: list):
             raw_15m  = get_yf(ticker, "15m", "5d")
             raw_1h   = get_yf(ticker, "60m", "30d")
             if raw_15m.empty or raw_1h.empty:
-                print(f"{ticker}: missing data")
                 continue
 
             df_15m = yf_to_std(raw_15m)
@@ -1099,7 +1104,6 @@ def scan_stocks(scan_log: list):
             df_4h = yf_to_std(raw_4h)
 
             if any(len(d) < 40 for d in [df_15m, df_1h, df_4h]):
-                print(f"{ticker}: not enough rows")
                 continue
 
             build_signal(ticker, "stock", df_15m, df_1h, df_4h, "STOCK", "neutral", scan_log)
@@ -1124,14 +1128,14 @@ def main():
         "• register_loss() bug fixed\n"
         "• Vector/dynamic-weight noise removed"
     )
-    print("V17 started.")
+
 
     last_report_day = None
     cycle_count     = 0
 
     while True:
         cycle_count += 1
-        print(f"\n--- Cycle {cycle_count} | {datetime.now(ZoneInfo('America/Chicago')).strftime('%H:%M:%S')} ---")
+        pass  # cycle header suppressed
         scan_log = []
 
         try:
@@ -1140,7 +1144,7 @@ def main():
             if stock_market_open():
                 scan_stocks(scan_log)
             else:
-                print("Stock market closed.")
+                pass  # market closed
 
             scan_crypto(scan_log)
 

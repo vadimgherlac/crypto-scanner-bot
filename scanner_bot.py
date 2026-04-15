@@ -18,6 +18,8 @@ Key changes from V16:
   - Cooldown 90 min after any loss (was 60)
 """
 
+print("BOOT: Python started", flush=True)
+
 import os
 import time
 import csv
@@ -29,6 +31,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from pybit.unified_trading import HTTP
+print("BOOT: all imports OK", flush=True)
 
 # =========================================================
 # LOAD ENV
@@ -51,6 +54,7 @@ bybit = HTTP(
     api_key=BYBIT_API_KEY,
     api_secret=BYBIT_API_SECRET,
 )
+print("BOOT: Bybit session created", flush=True)
 
 # =========================================================
 # SETTINGS

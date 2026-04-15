@@ -13,7 +13,7 @@ Key changes from V16:
   - Minimum R:R enforced at 1.8 (was implicit)
   - register_loss() bug fixed (missing asset_type arg)
   - Removed redundant pa_long/short_ok check (duplicate of liq/BOS)
-  - Score threshold raised: A grade ≥ 13, A+ ≥ 17
+  - Score threshold raised: A grade >= 13, A+ >= 17
   - Max 1 open signal per symbol at a time
   - Cooldown 90 min after any loss (was 60)
 """
@@ -63,29 +63,27 @@ PAIR_STATS_FILE = "pair_stats_v17.csv"
 
 sent_alerts: set = set()
 
-# ── Account / Risk ──────────────────────────────────────
+# -- Account / Risk ──────────────────────────────────────
 ACCOUNT_BALANCE             = 1000.0
 RISK_PER_TRADE_PCT          = 0.01          # 1% per trade
 MAX_DAILY_RISK_PCT          = 0.03          # 3% daily max
 MAX_LOSSES_PER_DAY          = 2
-COOLDOWN_AFTER_LOSS_MINUTES = 90            # ↑ from 60
+COOLDOWN_AFTER_LOSS_MINUTES = 90            # up from 60
 MIN_RR                      = 1.8           # minimum reward:risk ratio
 A_PLUS_ONLY_MODE            = False
 
-# ── Coin quality filter ──────────────────────────────────
-MIN_COIN_WINRATE_TO_TRADE   = 40.0          # ↑ from 35
-MIN_TRADES_FOR_COIN_FILTER  = 8             # ↑ from 5
+# -- Coin quality filter ──────────────────────────────────
+MIN_COIN_WINRATE_TO_TRADE   = 40.0          # up from 35
+MIN_TRADES_FOR_COIN_FILTER  = 8             # up from 5
 
-# ── Signal score thresholds ──────────────────────────────
-# Max possible rule score ≈ 22 pts.
-# A+: ≥17, A: ≥13, anything less = IGNORE
+# -- Signal score thresholds ──────────────────────────────
 SCORE_A_PLUS = 17
 SCORE_A      = 13
 
-# ── Diagnostic ──────────────────────────────────────────
+# -- Diagnostic ──────────────────────────────────────────
 DIAGNOSTIC_EVERY_N_CYCLES = 30
 
-# ── Watchlists ───────────────────────────────────────────
+# -- Watchlists ───────────────────────────────────────────
 STOCK_TICKERS = [
     "AAPL", "TSLA", "NVDA", "SPY", "QQQ",
     "AMD",  "META", "AMZN", "MSFT", "PLTR",
@@ -98,37 +96,25 @@ CRYPTO_SYMBOLS = [
     "NEARUSDT","OPUSDT",
 ]
 
-# ── Scoring weights (fixed, transparent) ─────────────────
-# Each condition is binary (fires or doesn't).
-# Points reflect how reliably each condition predicts wins
-# based on common SMC / trend-following research.
+# -- Scoring weights (fixed, transparent) ─────────────────
 WEIGHTS = {
-    # Trend alignment (3 timeframes) — most important filter
-    "trend_4h":    4,   # 4H above/below EMA20
-    "trend_1h":    3,   # 1H above/below EMA20
-    "trend_15m":   2,   # 15m above/below EMA20
-
-    # Momentum / structure
-    "adx_ok":      2,   # ADX ≥ 22 (meaningful trend)
-    "adx_dir":     1,   # +DI > -DI (long) or -DI > +DI (short)
-
-    # Price action — high-value signals
-    "liq_sweep":   3,   # liquidity sweep then reverse
-    "bos":         2,   # break of structure in trade direction
-    "engulf":      2,   # engulfing candle confirmation
-    "pin_bar":     2,   # hammer / shooting star
-
-    # Entry quality
-    "vwap":        1,   # price on correct side of VWAP
-    "rsi":         1,   # RSI in confirmation zone (not extreme)
-    "volume":      1,   # volume above 20-bar average
+    "trend_4h":    4,
+    "trend_1h":    3,
+    "trend_15m":   2,
+    "adx_ok":      2,
+    "adx_dir":     1,
+    "liq_sweep":   3,
+    "bos":         2,
+    "engulf":      2,
+    "pin_bar":     2,
+    "vwap":        1,
+    "rsi":         1,
+    "volume":      1,
 }
-# Max raw score = 4+3+2+2+1+3+2+2+2+1+1+1 = 24
-# A+ requires ≥17/24 = ~71%; A requires ≥13/24 = ~54%
 
-# ── Regime thresholds ────────────────────────────────────
-REGIME_ADX_TRENDING = 22     # ADX above this = trending
-REGIME_ADX_RANGING  = 18     # ADX below this = ranging/weak
+# -- Regime thresholds ────────────────────────────────────
+REGIME_ADX_TRENDING = 22
+REGIME_ADX_RANGING  = 18
 
 # =========================================================
 # TELEGRAM
@@ -184,11 +170,7 @@ def compute_adx(df: pd.DataFrame, period: int = 14):
     return adx, di_p, di_m
 
 def anchored_vwap(df: pd.DataFrame, lookback: int = 50) -> float:
-    """
-    Compute VWAP anchored to the last `lookback` bars only.
-    Much more stable than session-cumsum for pulled data.
-    """
-    d = df.tail(lookback).copy()
+    d  = df.tail(lookback).copy()
     tp = (d["high"] + d["low"] + d["close"]) / 3.0
     return float((tp * d["volume"]).sum() / (d["volume"].sum() + 1e-9))
 
@@ -216,14 +198,56 @@ def get_bybit_klines(symbol: str, interval: str, limit: int = 300) -> pd.DataFra
         print(f"{symbol} Bybit error: {e}")
         return None
 
-def get_yf(ticker: str, interval: str, period: str) -> pd.DataFrame:
-    df = yf.download(
-        ticker, period=period, interval=interval,
-        auto_adjust=True, progress=False, threads=False,
-    )
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-    return df
+
+def get_yf(ticker: str, interval: str, period: str, retries: int = 3) -> pd.DataFrame:
+    """
+    Wraps yf.download with a per-attempt timeout and exponential-backoff retry.
+
+    Railway (and similar PaaS platforms) can stall outbound connections silently,
+    causing the default 30-second curl hang seen in the error:
+        Timeout('Failed to perform, curl: (28) Operation timed out ...')
+
+    Fixes applied:
+      1. A custom requests.Session forces a 10-second connect/read timeout so we
+         fail fast instead of hanging for 30 s.
+      2. Up to `retries` attempts with 2^n second back-off (2s, 4s, 8s).
+      3. Returns an empty DataFrame on total failure — callers already guard for
+         that with `if raw.empty`.
+    """
+    last_exc = None
+    for attempt in range(1, retries + 1):
+        try:
+            import requests as _req
+
+            # Build a session that enforces a hard timeout on every request
+            # yfinance accepts a `session` kwarg and uses it for all HTTP calls.
+            session = _req.Session()
+            _original_request = session.request
+
+            def _request_with_timeout(method, url, **kwargs):
+                kwargs.setdefault("timeout", 10)   # 10 s connect + read
+                return _original_request(method, url, **kwargs)
+
+            session.request = _request_with_timeout
+
+            df = yf.download(
+                ticker, period=period, interval=interval,
+                auto_adjust=True, progress=False, threads=False,
+                session=session,
+            )
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            return df
+
+        except Exception as e:
+            last_exc = e
+            wait = 2 ** attempt   # 2 s, 4 s, 8 s
+            print(f"[{ticker}]: yf attempt {attempt}/{retries} failed ({e}), retrying in {wait}s…")
+            time.sleep(wait)
+
+    print(f"[{ticker}]: all yf retries exhausted — {last_exc}")
+    return pd.DataFrame()   # caller checks for empty df
+
 
 def yf_to_std(df_raw: pd.DataFrame) -> pd.DataFrame:
     """Normalise yfinance output to standard column names."""
@@ -266,18 +290,15 @@ def detect_regime(df: pd.DataFrame) -> str:
         return REGIME_RANGING
 
 def regime_score_penalty(regime: str) -> float:
-    """Points deducted from raw score based on regime (not multiplied — more predictable)."""
     return {REGIME_TRENDING: 0, REGIME_RANGING: 3, REGIME_VOLATILE: 5}.get(regime, 0)
 
 # =========================================================
 # PRICE ACTION
 # =========================================================
 def liq_sweep_long(df: pd.DataFrame, lookback: int = 20) -> bool:
-    """Price wicked below recent lows then CLOSED above them."""
     if len(df) < lookback + 3:
         return False
-    # Use confirmed candles only (exclude last bar which may not be closed)
-    confirmed = df.iloc[:-1]
+    confirmed  = df.iloc[:-1]
     recent_low = float(confirmed["low"].iloc[-(lookback + 1):-1].min())
     last_closed = confirmed.iloc[-1]
     return float(last_closed["low"]) < recent_low and float(last_closed["close"]) > recent_low
@@ -285,28 +306,26 @@ def liq_sweep_long(df: pd.DataFrame, lookback: int = 20) -> bool:
 def liq_sweep_short(df: pd.DataFrame, lookback: int = 20) -> bool:
     if len(df) < lookback + 3:
         return False
-    confirmed    = df.iloc[:-1]
-    recent_high  = float(confirmed["high"].iloc[-(lookback + 1):-1].max())
-    last_closed  = confirmed.iloc[-1]
+    confirmed   = df.iloc[:-1]
+    recent_high = float(confirmed["high"].iloc[-(lookback + 1):-1].max())
+    last_closed = confirmed.iloc[-1]
     return float(last_closed["high"]) > recent_high and float(last_closed["close"]) < recent_high
 
 def bos_long(df: pd.DataFrame, lookback: int = 10) -> bool:
-    """Close breaks above the highest high of the lookback window (confirmed bar)."""
     if len(df) < lookback + 3:
         return False
-    confirmed   = df.iloc[:-1]
-    swing_high  = float(confirmed["high"].iloc[-(lookback + 2):-2].max())
+    confirmed  = df.iloc[:-1]
+    swing_high = float(confirmed["high"].iloc[-(lookback + 2):-2].max())
     return float(confirmed.iloc[-1]["close"]) > swing_high
 
 def bos_short(df: pd.DataFrame, lookback: int = 10) -> bool:
     if len(df) < lookback + 3:
         return False
-    confirmed  = df.iloc[:-1]
-    swing_low  = float(confirmed["low"].iloc[-(lookback + 2):-2].min())
+    confirmed = df.iloc[:-1]
+    swing_low = float(confirmed["low"].iloc[-(lookback + 2):-2].min())
     return float(confirmed.iloc[-1]["close"]) < swing_low
 
 def bullish_engulf(df: pd.DataFrame) -> bool:
-    """Two confirmed closed candles."""
     if len(df) < 3:
         return False
     prev = df.iloc[-3]
@@ -331,11 +350,11 @@ def bearish_engulf(df: pd.DataFrame) -> bool:
     )
 
 def hammer(df: pd.DataFrame) -> bool:
-    c   = df.iloc[-2]          # confirmed bar
+    c   = df.iloc[-2]
     rng = float(c["high"]) - float(c["low"])
     if rng <= 0:
         return False
-    body   = abs(float(c["close"]) - float(c["open"]))
+    body    = abs(float(c["close"]) - float(c["open"]))
     lo_wick = min(float(c["open"]), float(c["close"])) - float(c["low"])
     hi_wick = float(c["high"]) - max(float(c["open"]), float(c["close"]))
     return lo_wick >= 2.0 * body and hi_wick <= 0.25 * rng and body / rng >= 0.1
@@ -345,7 +364,7 @@ def shooting_star(df: pd.DataFrame) -> bool:
     rng = float(c["high"]) - float(c["low"])
     if rng <= 0:
         return False
-    body   = abs(float(c["close"]) - float(c["open"]))
+    body    = abs(float(c["close"]) - float(c["open"]))
     hi_wick = float(c["high"]) - max(float(c["open"]), float(c["close"]))
     lo_wick = min(float(c["open"]), float(c["close"])) - float(c["low"])
     return hi_wick >= 2.0 * body and lo_wick <= 0.25 * rng and body / rng >= 0.1
@@ -410,7 +429,6 @@ def get_btc_bias() -> str:
         price = float(df.iloc[-1]["close"])
         e20   = float(df.iloc[-1]["ema20"])
         e50   = float(df.iloc[-1]["ema50"])
-        # Require BOTH EMAs for a clean bias
         if price > e20 and e20 > e50:
             return "bull"
         if price < e20 and e20 < e50:
@@ -424,7 +442,6 @@ def get_btc_bias() -> str:
 # =========================================================
 def crypto_session() -> str:
     hour = datetime.now(ZoneInfo("America/Chicago")).hour
-    # London open / NY open overlap
     if 2 <= hour <= 4 or 8 <= hour <= 11:
         return "HIGH"
     if 12 <= hour <= 16 or 20 <= hour <= 23:
@@ -436,7 +453,6 @@ def stock_market_open() -> bool:
     if now.weekday() >= 5:
         return False
     mins = now.hour * 60 + now.minute
-    # Avoid first 15 min (volatile open) and last 15 min
     return (9 * 60 + 45) <= mins <= (15 * 60 + 45)
 
 def grade(score: float) -> str:
@@ -590,7 +606,6 @@ def is_blacklisted(symbol: str) -> bool:
         return False
 
 def has_open_signal(symbol: str) -> bool:
-    """Prevent stacking multiple signals on the same symbol."""
     try:
         df  = pd.read_csv(SIGNALS_FILE)
         row = df[(df["symbol"] == symbol) & (df["status"] == "OPEN")]
@@ -629,7 +644,6 @@ def update_outcomes():
         except:
             continue
 
-        # Expire after 48h
         if (now - sig_naive).total_seconds() / 3600 > 48:
             df.at[i, "status"]    = "EXPIRED"
             df.at[i, "closed_at"] = now.strftime("%Y-%m-%d %H:%M:%S")
@@ -764,22 +778,19 @@ def build_diagnostic(scan_log: list) -> str:
 def build_signal(
     symbol:     str,
     asset_type: str,
-    df_15m:     pd.DataFrame,   # PRIMARY timeframe
+    df_15m:     pd.DataFrame,
     df_1h:      pd.DataFrame,
     df_4h:      pd.DataFrame,
     session:    str,
     btc_bias:   str,
     scan_log:   list,
 ):
-    # ── Need enough data ───────────────────────────────────
     if any(len(d) < 80 for d in [df_15m, df_1h, df_4h]):
         return
 
-    # ── Regime on primary TF ───────────────────────────────
-    regime = detect_regime(df_15m)
+    regime  = detect_regime(df_15m)
     penalty = regime_score_penalty(regime)
 
-    # ── Primary TF indicators (use iloc[-2] = confirmed close) ──
     close   = df_15m["close"].astype(float)
     high    = df_15m["high"].astype(float)
     low     = df_15m["low"].astype(float)
@@ -792,7 +803,6 @@ def build_signal(
     adx_s, di_p, di_m = compute_adx(df_15m)
     vol_avg = volume.rolling(20).mean()
 
-    # All readings from the LAST CONFIRMED bar (iloc[-2])
     price   = float(close.iloc[-2])
     e9      = float(ema9.iloc[-2])
     e20     = float(ema20.iloc[-2])
@@ -810,7 +820,6 @@ def build_signal(
                          "blockers_long": ["atr=0"], "blockers_short": ["atr=0"], "regime": regime})
         return
 
-    # ── Higher TF trends ──────────────────────────────────
     def htf_bull(df_htf: pd.DataFrame) -> bool:
         c = df_htf["close"].astype(float)
         e = c.ewm(span=20, adjust=False).mean()
@@ -824,16 +833,13 @@ def build_signal(
     t1h_bear = not t1h_bull
     t15_bear = not t15_bull
 
-    # Full trend alignment (all 3 agree)
     full_bull = t4h_bull and t1h_bull and t15_bull
     full_bear = t4h_bear and t1h_bear and t15_bear
 
-    # ── ADX ──────────────────────────────────────────────
     adx_ok   = adx_val >= REGIME_ADX_TRENDING
     adx_bull = adx_ok and dip_val > dim_val
     adx_bear = adx_ok and dim_val > dip_val
 
-    # ── Price Action (on confirmed candles) ──────────────
     liq_long  = liq_sweep_long(df_15m)
     liq_short = liq_sweep_short(df_15m)
     bos_l     = bos_long(df_15m)
@@ -843,22 +849,17 @@ def build_signal(
     pin_bull  = hammer(df_15m)
     pin_bear  = shooting_star(df_15m)
 
-    # ── Filters ───────────────────────────────────────────
     choppy     = is_choppy(e9, e20, atr_val)
     vol_ok     = vol_val > (vav * 1.3) if vav > 0 else False
     vwap_long  = price > vwap
     vwap_short = price < vwap
 
-    # RSI confirmation zones — tighter than V16
     rsi_long  = 45 <= rsi_val <= 65
     rsi_short = 35 <= rsi_val <= 55
 
-    # BTC filter: hardened
-    # Bear BTC → no longs. Bull BTC → no shorts. Neutral → both ok.
     btc_long_ok  = btc_bias in ("bull", "neutral") or symbol == "BTCUSDT"
     btc_short_ok = btc_bias in ("bear", "neutral") or symbol == "BTCUSDT"
 
-    # ── Scoring ───────────────────────────────────────────
     W = WEIGHTS
     long_score = 0.0
     long_score += W["trend_4h"]   * (1 if t4h_bull   else 0)
@@ -888,11 +889,9 @@ def build_signal(
     short_score += W["rsi"]       * (1 if rsi_short  else 0)
     short_score += W["volume"]    * (1 if vol_ok     else 0)
 
-    # Regime penalty (subtract, not multiply — easier to reason about)
     long_score  -= penalty
     short_score -= penalty
 
-    # Session adjustment
     if session == "HIGH":
         long_score  += 1
         short_score += 1
@@ -903,14 +902,11 @@ def build_signal(
     long_grade  = grade(long_score)
     short_grade = grade(short_score)
 
-    # ── HARD GATES (all must pass) ─────────────────────────
-    # Long: full 3TF bull alignment, at least one PA signal,
-    #       VWAP filter, ADX ok, not choppy, BTC filter, grade A/A+
     buy_signal = (
         long_grade in (["A+"] if A_PLUS_ONLY_MODE else ["A+", "A"]) and
         full_bull and
-        (liq_long or bos_l) and       # need structural PA
-        (bull_eng or pin_bull) and    # need candle confirmation
+        (liq_long or bos_l) and
+        (bull_eng or pin_bull) and
         vwap_long and
         adx_ok and
         not choppy and
@@ -930,7 +926,6 @@ def build_signal(
         rsi_short
     )
 
-    # ── Diagnostic blockers ───────────────────────────────
     def blockers_for(
         score, sig_grade, full_trend, liq, bos_ok, can, vwap_ok,
         adx_pass, chp, btc_ok, rsi_ok, a_plus,
@@ -972,7 +967,6 @@ def build_signal(
 
     ts = datetime.now(ZoneInfo("America/Chicago")).strftime("%Y-%m-%d %H:%M:%S")
 
-    # ── EMIT SIGNAL ───────────────────────────────────────
     if buy_signal and not has_open_signal(symbol):
         entry = price
         stop  = smart_stop_long(df_15m, atr_val)
@@ -1115,7 +1109,6 @@ def scan_stocks(scan_log: list):
 
             df_15m = yf_to_std(raw_15m)
             df_1h  = yf_to_std(raw_1h)
-            # Build 4H from 1H by resampling
             raw_4h = (
                 raw_1h.resample("4h").agg({
                     "Open": "first", "High": "max",
@@ -1158,7 +1151,7 @@ def main():
 
     while True:
         cycle_count += 1
-        print(f"\n─── Cycle {cycle_count} | {datetime.now(ZoneInfo('America/Chicago')).strftime('%H:%M:%S')} ───")
+        print(f"\n--- Cycle {cycle_count} | {datetime.now(ZoneInfo('America/Chicago')).strftime('%H:%M:%S')} ---")
         scan_log = []
 
         try:

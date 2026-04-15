@@ -1118,7 +1118,9 @@ def scan_stocks(scan_log: list):
 # MAIN LOOP
 # =========================================================
 def main():
+    print("BOOT: main() entered", flush=True)
     ensure_files()
+    print("BOOT: files ensured", flush=True)
     send_telegram(
         "✅ Scanner V17 started\n\n"
         "Changes from V16:\n"
@@ -1134,12 +1136,13 @@ def main():
     )
 
 
+    print("BOOT: entering main loop", flush=True)
     last_report_day = None
     cycle_count     = 0
 
     while True:
         cycle_count += 1
-        pass  # cycle header suppressed
+        print(f"BOOT: cycle {cycle_count} start", flush=True)
         scan_log = []
 
         try:

@@ -201,69 +201,38 @@ def get_bybit_klines(symbol: str, interval: str, limit: int = 300) -> pd.DataFra
 
 def get_yf(ticker: str, interval: str, period: str, retries: int = 3) -> pd.DataFrame:
     """
-    Wraps yf.download with a per-attempt timeout and exponential-backoff retry.
-
-    Railway (and similar PaaS platforms) can stall outbound connections silently,
-    causing the default 30-second curl hang seen in the error:
-        Timeout('Failed to perform, curl: (28) Operation timed out ...')
-
-    Fixes applied:
-      1. A custom requests.Session forces a 10-second connect/read timeout so we
-         fail fast instead of hanging for 30 s.
-      2. Up to `retries` attempts with 2^n second back-off (2s, 4s, 8s).
-      3. Returns an empty DataFrame on total failure — callers already guard for
-         that with `if raw.empty`.
+    Safe yfinance fetch (NO custom session — required for curl_cffi)
     """
     last_exc = None
+
     for attempt in range(1, retries + 1):
         try:
-            import requests as _req
-
-            # Build a session that enforces a hard timeout on every request
-            # yfinance accepts a `session` kwarg and uses it for all HTTP calls.
-            session = _req.Session()
-            _original_request = session.request
-
-            def _request_with_timeout(method, url, **kwargs):
-                kwargs.setdefault("timeout", 10)   # 10 s connect + read
-                return _original_request(method, url, **kwargs)
-
-            session.request = _request_with_timeout
-
             df = yf.download(
-                ticker, period=period, interval=interval,
-                auto_adjust=True, progress=False, threads=False,
-                session=session,
+                ticker,
+                period=period,
+                interval=interval,
+                auto_adjust=True,
+                progress=False,
+                threads=False
             )
+
+            if df.empty:
+                raise ValueError("Empty dataframe")
+
+            # Fix MultiIndex (important)
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
+
             return df
 
         except Exception as e:
             last_exc = e
-            wait = 2 ** attempt   # 2 s, 4 s, 8 s
-            print(f"[{ticker}]: yf attempt {attempt}/{retries} failed ({e}), retrying in {wait}s…")
+            wait = 2 ** attempt
+            print(f"[{ticker}] attempt {attempt}/{retries} failed ({e}), retrying in {wait}s...")
             time.sleep(wait)
 
-    print(f"[{ticker}]: all yf retries exhausted — {last_exc}")
-    return pd.DataFrame()   # caller checks for empty df
-
-
-def yf_to_std(df_raw: pd.DataFrame) -> pd.DataFrame:
-    """Normalise yfinance output to standard column names."""
-    col = lambda c: (
-        df_raw[c].squeeze().astype(float)
-        if c in df_raw.columns else pd.Series(dtype=float)
-    )
-    return pd.DataFrame({
-        "timestamp": df_raw.index,
-        "open":   col("Open").values,
-        "high":   col("High").values,
-        "low":    col("Low").values,
-        "close":  col("Close").values,
-        "volume": col("Volume").values,
-    }).dropna().reset_index(drop=True)
-
+    print(f"[{ticker}] FAILED — {last_exc}")
+    return pd.DataFrame()
 # =========================================================
 # MARKET REGIME
 # =========================================================

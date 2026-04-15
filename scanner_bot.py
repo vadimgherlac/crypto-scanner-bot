@@ -18,7 +18,6 @@ Key changes from V16:
   - Cooldown 90 min after any loss (was 60)
 """
 
-print("BOOT: Python started", flush=True)
 
 import os
 import time
@@ -31,7 +30,6 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from pybit.unified_trading import HTTP
-print("BOOT: all imports OK", flush=True)
 
 # =========================================================
 # LOAD ENV
@@ -54,7 +52,6 @@ bybit = HTTP(
     api_key=BYBIT_API_KEY,
     api_secret=BYBIT_API_SECRET,
 )
-print("BOOT: Bybit session created", flush=True)
 
 # =========================================================
 # SETTINGS
@@ -1069,6 +1066,7 @@ def scan_crypto(scan_log: list):
             build_signal(symbol, "crypto", df_15m, df_1h, df_4h, session, btc_bias, scan_log)
         except Exception as e:
             print(f"Error {symbol}: {e}")
+        time.sleep(0.3)  # avoid Bybit rate limit
 
 # =========================================================
 # STOCK SCANNER
@@ -1118,9 +1116,7 @@ def scan_stocks(scan_log: list):
 # MAIN LOOP
 # =========================================================
 def main():
-    print("BOOT: main() entered", flush=True)
     ensure_files()
-    print("BOOT: files ensured", flush=True)
     send_telegram(
         "✅ Scanner V17 started\n\n"
         "Changes from V16:\n"
@@ -1136,13 +1132,11 @@ def main():
     )
 
 
-    print("BOOT: entering main loop", flush=True)
     last_report_day = None
     cycle_count     = 0
 
     while True:
         cycle_count += 1
-        print(f"BOOT: cycle {cycle_count} start", flush=True)
         scan_log = []
 
         try:
@@ -1151,7 +1145,6 @@ def main():
             if stock_market_open():
                 scan_stocks(scan_log)
             else:
-                pass  # market closed
 
             scan_crypto(scan_log)
 
@@ -1164,7 +1157,9 @@ def main():
                 send_telegram(build_diagnostic(scan_log))
 
         except Exception as e:
-            print(f"Main loop error: {e}")
+            import traceback
+            print(f"LOOP ERROR: {e}", flush=True)
+            traceback.print_exc()
 
         time.sleep(CHECK_EVERY_SECONDS)
 

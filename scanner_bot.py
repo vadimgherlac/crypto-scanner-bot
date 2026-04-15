@@ -1145,6 +1145,7 @@ def main():
             if stock_market_open():
                 scan_stocks(scan_log)
             else:
+                pass  # market closed
 
             scan_crypto(scan_log)
 

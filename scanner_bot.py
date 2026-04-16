@@ -1,3 +1,9 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+import sys, os
+os.environ["PYTHONUNBUFFERED"] = "1"
+sys.stdout.reconfigure(line_buffering=True)
+
 """
 Scanner Bot V17
 ===============
@@ -1176,6 +1182,8 @@ def main():
 
     while True:
         cycle_count += 1
+        market_status = 'OPEN' if stock_market_open() else 'CLOSED'
+        print(f'[cycle {cycle_count}] {now_ct().strftime("%H:%M:%S")} CT | market={market_status}', flush=True)
         scan_log = []
 
         try:

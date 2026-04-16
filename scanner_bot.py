@@ -28,6 +28,22 @@ import pandas as pd
 import yfinance as yf
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+
+def now_ct():
+    """Return current time in US Central (CT) without requiring tzdata."""
+    from datetime import datetime, timedelta
+    now_utc = datetime.utcnow()
+    year = now_utc.year
+    # DST: second Sunday of March -> first Sunday of November
+    march1 = datetime(year, 3, 1)
+    first_sun_march = march1 + timedelta(days=(6 - march1.weekday()) % 7)
+    cdt_start = first_sun_march + timedelta(weeks=1)
+    nov1 = datetime(year, 11, 1)
+    cdt_end = nov1 + timedelta(days=(6 - nov1.weekday()) % 7)
+    is_cdt = cdt_start <= now_utc.replace(hour=2, minute=0, second=0) < cdt_end
+    offset = 5 if is_cdt else 6  # CDT=UTC-5, CST=UTC-6
+    return now_utc - timedelta(hours=offset)
+
 from dotenv import load_dotenv
 from pybit.unified_trading import HTTP
 
@@ -411,7 +427,7 @@ def get_btc_bias() -> str:
 # SESSION STRENGTH
 # =========================================================
 def crypto_session() -> str:
-    hour = datetime.now(ZoneInfo("America/Chicago")).hour
+    hour = now_ct().hour
     if 2 <= hour <= 4 or 8 <= hour <= 11:
         return "HIGH"
     if 12 <= hour <= 16 or 20 <= hour <= 23:
@@ -488,7 +504,7 @@ def log_signal(
 # DAILY RISK LOCK
 # =========================================================
 def get_today() -> str:
-    return datetime.now(ZoneInfo("America/Chicago")).strftime("%Y-%m-%d")
+    return now_ct().strftime("%Y-%m-%d")
 
 def read_lock() -> dict:
     ensure_files()
@@ -538,7 +554,7 @@ def is_locked(asset_type: str) -> tuple[bool, str]:
     if lock["cooldown_until"]:
         try:
             until = datetime.fromisoformat(lock["cooldown_until"])
-            now   = datetime.now(ZoneInfo("America/Chicago")).replace(tzinfo=None)
+            now   = now_ct().replace(tzinfo=None)
             if now < until:
                 return True, f"Cooldown until {until.strftime('%H:%M')}"
         except:
@@ -550,7 +566,7 @@ def register_loss(asset_type: str):
     lock[f"loss_count_{asset_type}"] += 1
     lock[f"risk_{asset_type}"] += ACCOUNT_BALANCE * RISK_PER_TRADE_PCT
     cooldown_dt = (
-        datetime.now(ZoneInfo("America/Chicago")).replace(tzinfo=None)
+        now_ct().replace(tzinfo=None)
         + timedelta(minutes=COOLDOWN_AFTER_LOSS_MINUTES)
     )
     lock["cooldown_until"] = cooldown_dt.isoformat()
@@ -612,7 +628,7 @@ def update_outcomes():
 
     df["closed_at"] = df["closed_at"].astype(object)
     updated = False
-    now = datetime.now(ZoneInfo("America/Chicago")).replace(tzinfo=None)
+    now = now_ct().replace(tzinfo=None)
 
     for i, row in df.iterrows():
         if row["status"] != "OPEN":
@@ -950,7 +966,7 @@ def build_signal(
         "regime": regime,
     })
 
-    ts = datetime.now(ZoneInfo("America/Chicago")).strftime("%Y-%m-%d %H:%M:%S")
+    ts = now_ct().strftime("%Y-%m-%d %H:%M:%S")
 
     if buy_signal and not has_open_signal(symbol):
         entry = price
@@ -1066,7 +1082,7 @@ def scan_crypto(scan_log: list):
             build_signal(symbol, "crypto", df_15m, df_1h, df_4h, session, btc_bias, scan_log)
         except Exception as e:
             print(f"Error {symbol}: {e}")
-        time.sleep(0.3)  # avoid Bybit rate limit
+        time.sleep(0.8)  # avoid Bybit rate limit
 
 # =========================================================
 # STOCK SCANNER
@@ -1149,7 +1165,7 @@ def main():
 
             scan_crypto(scan_log)
 
-            now = datetime.now(ZoneInfo("America/Chicago"))
+            now = now_ct()
             if now.hour == 20 and now.minute < 2 and last_report_day != now.date():
                 send_daily_report()
                 last_report_day = now.date()

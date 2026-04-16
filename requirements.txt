@@ -4,4 +4,3 @@ yfinance
 python-dotenv
 pybit
 tzdata
-numpy

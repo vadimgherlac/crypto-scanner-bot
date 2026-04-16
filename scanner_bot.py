@@ -224,31 +224,25 @@ def get_yf(ticker: str, interval: str, period: str, retries: int = 3) -> pd.Data
 
     for attempt in range(1, retries + 1):
         try:
-            df = yf.download(
-                ticker,
-                period=period,
-                interval=interval,
-                auto_adjust=True,
-                progress=False,
-                threads=False
-            )
+            tk = yf.Ticker(ticker)
+            df = tk.history(period=period, interval=interval, auto_adjust=True)
 
             if df.empty:
                 raise ValueError("Empty dataframe")
 
-            # Fix MultiIndex (important)
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
+            # Normalize to lowercase to match rest of codebase
+            df.columns = [c.lower() for c in df.columns]
+            df.index = pd.to_datetime(df.index)
+            if df.index.tz is not None:
+                df.index = df.index.tz_localize(None)
 
             return df
 
         except Exception as e:
             last_exc = e
             wait = 2 ** attempt
-            print(f"[{ticker}] attempt {attempt}/{retries} failed ({e}), retrying in {wait}s...")
             time.sleep(wait)
 
-    print(f"[{ticker}] FAILED — {last_exc}")
     return pd.DataFrame()
 # =========================================================
 # MARKET REGIME
@@ -1082,20 +1076,24 @@ def scan_crypto(scan_log: list):
             build_signal(symbol, "crypto", df_15m, df_1h, df_4h, session, btc_bias, scan_log)
         except Exception as e:
             print(f"Error {symbol}: {e}")
-        time.sleep(0.8)  # avoid Bybit rate limit
+        time.sleep(1.2)  # avoid Bybit rate limit
 
 # =========================================================
 # STOCK SCANNER
 # =========================================================
 def yf_to_std(df_raw: pd.DataFrame) -> pd.DataFrame:
-    """Convert yfinance dataframe to standard format used by bot"""
+    """Convert yfinance dataframe to standard format used by bot.
+    Handles both Title Case (old yf.download) and lowercase (yf.Ticker.history) columns."""
+    # Normalize to lowercase so we handle both column styles
+    df = df_raw.copy()
+    df.columns = [c.lower() for c in df.columns]
     return pd.DataFrame({
-        "timestamp": df_raw.index,
-        "open": df_raw["Open"].astype(float).values,
-        "high": df_raw["High"].astype(float).values,
-        "low": df_raw["Low"].astype(float).values,
-        "close": df_raw["Close"].astype(float).values,
-        "volume": df_raw["Volume"].astype(float).values,
+        "timestamp": df.index,
+        "open":   df["open"].astype(float).values,
+        "high":   df["high"].astype(float).values,
+        "low":    df["low"].astype(float).values,
+        "close":  df["close"].astype(float).values,
+        "volume": df["volume"].astype(float).values,
     }).dropna().reset_index(drop=True)
 
 def scan_stocks(scan_log: list):
@@ -1114,9 +1112,9 @@ def scan_stocks(scan_log: list):
             df_1h  = yf_to_std(raw_1h)
             raw_4h = (
                 raw_1h.resample("4h").agg({
-                    "Open": "first", "High": "max",
-                    "Low": "min",   "Close": "last",
-                    "Volume": "sum",
+                    "open": "first", "high": "max",
+                    "low": "min",    "close": "last",
+                    "volume": "sum",
                 }).dropna()
             )
             df_4h = yf_to_std(raw_4h)

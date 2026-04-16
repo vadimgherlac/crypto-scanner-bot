@@ -1055,6 +1055,10 @@ def build_signal(
 # =========================================================
 # CRYPTO SCANNER
 # =========================================================
+# Cache for slow timeframes — only refresh every N minutes
+_slow_cache: dict = {}          # symbol -> {df_1h, df_4h, ts}
+SLOW_CACHE_MINUTES = 10         # 1h and 4h data refreshed every 10 min
+
 def scan_crypto(scan_log: list):
     locked, reason = is_locked("crypto")
     if locked:
@@ -1062,21 +1066,42 @@ def scan_crypto(scan_log: list):
 
     session  = crypto_session()
     btc_bias = get_btc_bias()
-    # session/btc logged only in signals
+
+    now = now_ct()
 
     for symbol in CRYPTO_SYMBOLS:
         try:
             if is_blacklisted(symbol):
                 continue
-            df_15m = get_bybit_klines(symbol, "15",  300)
-            df_1h  = get_bybit_klines(symbol, "60",  200)
-            df_4h  = get_bybit_klines(symbol, "240", 200)
+
+            # Always fetch 15m (fast timeframe)
+            df_15m = get_bybit_klines(symbol, "15", 300)
+            time.sleep(0.5)
+
+            # Fetch 1h and 4h from cache if fresh, else re-fetch
+            cached = _slow_cache.get(symbol)
+            cache_stale = (
+                cached is None or
+                (now - cached["ts"]).total_seconds() > SLOW_CACHE_MINUTES * 60
+            )
+
+            if cache_stale:
+                df_1h = get_bybit_klines(symbol, "60",  200)
+                time.sleep(0.5)
+                df_4h = get_bybit_klines(symbol, "240", 200)
+                time.sleep(0.5)
+                if df_1h is not None and df_4h is not None:
+                    _slow_cache[symbol] = {"df_1h": df_1h, "df_4h": df_4h, "ts": now}
+            else:
+                df_1h = cached["df_1h"]
+                df_4h = cached["df_4h"]
+
             if any(d is None or len(d) < 80 for d in [df_15m, df_1h, df_4h]):
                 continue
+
             build_signal(symbol, "crypto", df_15m, df_1h, df_4h, session, btc_bias, scan_log)
         except Exception as e:
             print(f"Error {symbol}: {e}")
-        time.sleep(1.2)  # avoid Bybit rate limit
 
 # =========================================================
 # STOCK SCANNER

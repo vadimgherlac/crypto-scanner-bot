@@ -92,16 +92,31 @@ RISK_PER_TRADE_PCT          = 0.01          # 1% per trade
 MAX_DAILY_RISK_PCT          = 0.03          # 3% daily max
 MAX_LOSSES_PER_DAY          = 2
 COOLDOWN_AFTER_LOSS_MINUTES = 90            # up from 60
-MIN_RR                      = 1.5           # minimum reward:risk ratio
 A_PLUS_ONLY_MODE            = False
 
 # -- Coin quality filter ──────────────────────────────────
 MIN_COIN_WINRATE_TO_TRADE   = 35.0          # up from 35
 MIN_TRADES_FOR_COIN_FILTER  = 10             # up from 5
 
-# -- Signal score thresholds ──────────────────────────────
-SCORE_A_PLUS = 15
-SCORE_A      = 10
+# -- Signal score thresholds (CRYPTO) ────────────────────
+CRYPTO_SCORE_A_PLUS = 15
+CRYPTO_SCORE_A      = 10
+CRYPTO_MIN_RR       = 1.5
+CRYPTO_ADX_MIN      = 20
+CRYPTO_RSI_LONG     = (40, 70)
+CRYPTO_RSI_SHORT    = (30, 60)
+CRYPTO_REQUIRE_CANDLE = True   # require engulf or pin bar
+CRYPTO_ALLOW_CHOPPY   = False
+
+# -- Signal score thresholds (STOCKS) ────────────────────
+STOCK_SCORE_A_PLUS  = 12
+STOCK_SCORE_A       = 8
+STOCK_MIN_RR        = 1.3
+STOCK_ADX_MIN       = 17
+STOCK_RSI_LONG      = (35, 75)
+STOCK_RSI_SHORT     = (25, 65)
+STOCK_REQUIRE_CANDLE = False   # candle pattern optional for stocks
+STOCK_ALLOW_CHOPPY   = True    # stocks can trend through choppy readings
 
 # -- Diagnostic ──────────────────────────────────────────
 DIAGNOSTIC_EVERY_N_CYCLES = 0   # 0 = disabled (end-of-day report only)
@@ -456,10 +471,12 @@ def stock_market_open() -> bool:
     mins = now_et.hour * 60 + now_et.minute
     return (9 * 60 + 45) <= mins <= (15 * 60 + 45)
 
-def grade(score: float) -> str:
-    if score >= SCORE_A_PLUS:
+def grade(score: float, asset_type: str = "crypto") -> str:
+    a_plus = CRYPTO_SCORE_A_PLUS if asset_type == "crypto" else STOCK_SCORE_A_PLUS
+    a      = CRYPTO_SCORE_A      if asset_type == "crypto" else STOCK_SCORE_A
+    if score >= a_plus:
         return "A+"
-    if score >= SCORE_A:
+    if score >= a:
         return "A"
     return "IGNORE"
 
@@ -849,7 +866,7 @@ def build_signal(
     full_bull = (t4h_bull and t1h_bull) or (t1h_bull and t15_bull) or (t4h_bull and t15_bull)
     full_bear = (t4h_bear and t1h_bear) or (t1h_bear and t15_bear) or (t4h_bear and t15_bear)
 
-    adx_ok   = adx_val >= REGIME_ADX_TRENDING
+    adx_ok   = adx_val >= adx_min
     adx_bull = adx_ok and dip_val > dim_val
     adx_bear = adx_ok and dim_val > dip_val
 
@@ -867,11 +884,20 @@ def build_signal(
     vwap_long  = price > vwap
     vwap_short = price < vwap
 
-    rsi_long  = 40 <= rsi_val <= 70
-    rsi_short = 30 <= rsi_val <= 60
+    rsi_long  = rsi_l_lo <= rsi_val <= rsi_l_hi
+    rsi_short = rsi_s_lo <= rsi_val <= rsi_s_hi
 
     btc_long_ok  = btc_bias in ("bull", "neutral") or symbol == "BTCUSDT"
     btc_short_ok = btc_bias in ("bear", "neutral") or symbol == "BTCUSDT"
+
+    # Per-asset thresholds
+    is_stock   = asset_type == "stock"
+    min_rr     = STOCK_MIN_RR       if is_stock else CRYPTO_MIN_RR
+    adx_min    = STOCK_ADX_MIN      if is_stock else CRYPTO_ADX_MIN
+    rsi_l_lo, rsi_l_hi = STOCK_RSI_LONG  if is_stock else CRYPTO_RSI_LONG
+    rsi_s_lo, rsi_s_hi = STOCK_RSI_SHORT if is_stock else CRYPTO_RSI_SHORT
+    req_candle = STOCK_REQUIRE_CANDLE if is_stock else CRYPTO_REQUIRE_CANDLE
+    allow_chop = STOCK_ALLOW_CHOPPY   if is_stock else CRYPTO_ALLOW_CHOPPY
 
     W = WEIGHTS
     long_score = 0.0
@@ -912,16 +938,19 @@ def build_signal(
         long_score  -= 1
         short_score -= 1
 
-    long_grade  = grade(long_score)
-    short_grade = grade(short_score)
+    long_grade  = grade(long_score,  asset_type)
+    short_grade = grade(short_score, asset_type)
+
+    candle_long  = (bull_eng or pin_bull) if req_candle else (bull_eng or pin_bull or bos_l or liq_long)
+    candle_short = (bear_eng or pin_bear) if req_candle else (bear_eng or pin_bear or bos_s or liq_short)
 
     buy_signal = (
         long_grade in (["A+"] if A_PLUS_ONLY_MODE else ["A+", "A"]) and
         full_bull and
         (liq_long or bos_l) and
-        (bull_eng or pin_bull) and
+        candle_long and
         adx_ok and
-        not choppy and
+        (allow_chop or not choppy) and
         btc_long_ok
     )
 
@@ -929,9 +958,9 @@ def build_signal(
         short_grade in (["A+"] if A_PLUS_ONLY_MODE else ["A+", "A"]) and
         full_bear and
         (liq_short or bos_s) and
-        (bear_eng or pin_bear) and
+        candle_short and
         adx_ok and
-        not choppy and
+        (allow_chop or not choppy) and
         btc_short_ok
     )
 
@@ -985,7 +1014,7 @@ def build_signal(
         tp1 = round(entry + 1.5 * risk, 5)
         tp2 = round(entry + 2.5 * risk, 5)
         rr  = calc_rr(entry, stop, tp2)
-        if rr < MIN_RR:
+        if rr < min_rr:
 
             return
         qty = get_qty(symbol, entry, stop) if asset_type == "crypto" else "N/A"
@@ -1029,7 +1058,7 @@ def build_signal(
         tp1 = round(entry - 1.5 * risk, 5)
         tp2 = round(entry - 2.5 * risk, 5)
         rr  = calc_rr(entry, stop, tp2)
-        if rr < MIN_RR:
+        if rr < min_rr:
 
             return
         qty = get_qty(symbol, entry, stop) if asset_type == "crypto" else "N/A"

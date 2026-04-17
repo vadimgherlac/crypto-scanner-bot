@@ -725,34 +725,46 @@ def update_outcomes():
 # =========================================================
 def send_daily_report():
     try:
-        df     = pd.read_csv(SIGNALS_FILE)
-        closed = df[df["status"].isin(["WIN", "LOSS"])].copy()
-        if closed.empty:
-            return
-        total    = len(closed)
-        wins     = (closed["status"] == "WIN").sum()
-        win_rate = round(wins / total * 100, 1)
+        today = get_today()
+        df    = pd.read_csv(SIGNALS_FILE)
 
-        by_coin  = closed.groupby("symbol")["status"].apply(
-            lambda x: f"{round((x=='WIN').mean()*100, 0):.0f}% ({len(x)})"
-        ).to_dict()
-        by_grade = closed.groupby("grade")["status"].apply(
-            lambda x: f"{round((x=='WIN').mean()*100, 0):.0f}% ({len(x)})"
-        ).to_dict()
-        by_regime = closed.groupby("regime")["status"].apply(
-            lambda x: f"{round((x=='WIN').mean()*100, 0):.0f}% ({len(x)})"
-        ).to_dict() if "regime" in closed.columns else {}
+        # --- Signals sent TODAY ---
+        today_signals = df[df["timestamp"].astype(str).str.startswith(today)].copy()
 
-        coin_lines   = "\n".join(f"  {k}: {v}" for k, v in by_coin.items())
-        grade_lines  = "\n".join(f"  {k}: {v}" for k, v in by_grade.items())
-        regime_lines = "\n".join(f"  {k}: {v}" for k, v in by_regime.items()) or "  N/A"
+        # --- All-time closed trades ---
+        closed_all = df[df["status"].isin(["WIN", "LOSS"])].copy()
+
+        # --- Today's closed trades ---
+        closed_today = today_signals[today_signals["status"].isin(["WIN", "LOSS"])].copy()
+        open_today   = today_signals[today_signals["status"] == "OPEN"].copy()
+
+        # Build today signals list
+        signal_lines = []
+        for _, row in today_signals.iterrows():
+            icon = "✅" if row["status"] == "WIN" else ("❌" if row["status"] == "LOSS" else "⏳")
+            signal_lines.append(
+                f"  {icon} {row['side']} {row['symbol']} "
+                f"@ {row['entry']} | {row['status']} | {row['grade']}"
+            )
+        signals_block = "\n".join(signal_lines) if signal_lines else "  No signals today"
+
+        # Today stats
+        t_total = len(closed_today)
+        t_wins  = (closed_today["status"] == "WIN").sum() if t_total > 0 else 0
+        t_wr    = round(t_wins / t_total * 100, 1) if t_total > 0 else 0.0
+
+        # All-time stats
+        a_total = len(closed_all)
+        a_wins  = (closed_all["status"] == "WIN").sum() if a_total > 0 else 0
+        a_wr    = round(a_wins / a_total * 100, 1) if a_total > 0 else 0.0
 
         msg = (
-            f"📊 V17 DAILY REPORT\n\n"
-            f"Total: {total} | Wins: {wins} | WR: {win_rate}%\n\n"
-            f"🏆 By Coin:\n{coin_lines}\n\n"
-            f"🎯 By Grade:\n{grade_lines}\n\n"
-            f"📈 By Regime:\n{regime_lines}"
+            f"📊 V17 DAILY REPORT — {today}\n"
+            f"{'='*30}\n\n"
+            f"📨 Signals Sent Today: {len(today_signals)}\n"
+            f"{signals_block}\n\n"
+            f"📅 TODAY  — W:{t_wins} L:{t_total - t_wins} Open:{len(open_today)} | WR:{t_wr}%\n"
+            f"📈 ALL-TIME — W:{a_wins} L:{a_total - a_wins} Total:{a_total} | WR:{a_wr}%"
         )
         send_telegram(msg)
     except Exception as e:
@@ -1075,6 +1087,7 @@ def scan_crypto(scan_log: list):
 
     now = now_ct()
 
+    print(f"  crypto: scanning {len(CRYPTO_SYMBOLS)} symbols...", flush=True)
     for symbol in CRYPTO_SYMBOLS:
         try:
             if is_blacklisted(symbol):
@@ -1183,18 +1196,21 @@ def main():
     while True:
         cycle_count += 1
         market_status = 'OPEN' if stock_market_open() else 'CLOSED'
-        print(f'[cycle {cycle_count}] {now_ct().strftime("%H:%M:%S")} CT | market={market_status}', flush=True)
+        print(f'[cycle {cycle_count}] {now_ct().strftime("%H:%M:%S")} CT | stocks={market_status} | crypto=SCANNING', flush=True)
         scan_log = []
 
         try:
             update_outcomes()
 
             if stock_market_open():
+                print("  stocks: scanning...", flush=True)
                 scan_stocks(scan_log)
+                print("  stocks: done", flush=True)
             else:
                 pass  # market closed
 
             scan_crypto(scan_log)
+            print(f"  crypto: done", flush=True)
 
             now = now_ct()
             if now.hour == 20 and now.minute < 2 and last_report_day != now.date():

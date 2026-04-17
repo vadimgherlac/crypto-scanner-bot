@@ -970,7 +970,8 @@ def build_signal(
     ):
         b = []
         if sig_grade == "IGNORE":
-            b.append(f"score={score:.1f}<{SCORE_A}")
+            threshold = STOCK_SCORE_A if is_stock else CRYPTO_SCORE_A
+            b.append(f"score={score:.1f}<{threshold}")
         if not full_trend:
             b.append("trend not aligned")
         if not (liq or bos_ok):

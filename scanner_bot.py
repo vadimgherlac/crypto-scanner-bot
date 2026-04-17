@@ -92,16 +92,16 @@ RISK_PER_TRADE_PCT          = 0.01          # 1% per trade
 MAX_DAILY_RISK_PCT          = 0.03          # 3% daily max
 MAX_LOSSES_PER_DAY          = 2
 COOLDOWN_AFTER_LOSS_MINUTES = 90            # up from 60
-MIN_RR                      = 1.8           # minimum reward:risk ratio
+MIN_RR                      = 1.5           # minimum reward:risk ratio
 A_PLUS_ONLY_MODE            = False
 
 # -- Coin quality filter ──────────────────────────────────
-MIN_COIN_WINRATE_TO_TRADE   = 40.0          # up from 35
-MIN_TRADES_FOR_COIN_FILTER  = 8             # up from 5
+MIN_COIN_WINRATE_TO_TRADE   = 35.0          # up from 35
+MIN_TRADES_FOR_COIN_FILTER  = 10             # up from 5
 
 # -- Signal score thresholds ──────────────────────────────
-SCORE_A_PLUS = 17
-SCORE_A      = 13
+SCORE_A_PLUS = 15
+SCORE_A      = 10
 
 # -- Diagnostic ──────────────────────────────────────────
 DIAGNOSTIC_EVERY_N_CYCLES = 0   # 0 = disabled (end-of-day report only)
@@ -136,7 +136,7 @@ WEIGHTS = {
 }
 
 # -- Regime thresholds ────────────────────────────────────
-REGIME_ADX_TRENDING = 22
+REGIME_ADX_TRENDING = 20
 REGIME_ADX_RANGING  = 18
 
 # =========================================================
@@ -846,8 +846,8 @@ def build_signal(
     t1h_bear = not t1h_bull
     t15_bear = not t15_bull
 
-    full_bull = t4h_bull and t1h_bull and t15_bull
-    full_bear = t4h_bear and t1h_bear and t15_bear
+    full_bull = (t4h_bull and t1h_bull) or (t1h_bull and t15_bull) or (t4h_bull and t15_bull)
+    full_bear = (t4h_bear and t1h_bear) or (t1h_bear and t15_bear) or (t4h_bear and t15_bear)
 
     adx_ok   = adx_val >= REGIME_ADX_TRENDING
     adx_bull = adx_ok and dip_val > dim_val
@@ -867,8 +867,8 @@ def build_signal(
     vwap_long  = price > vwap
     vwap_short = price < vwap
 
-    rsi_long  = 45 <= rsi_val <= 65
-    rsi_short = 35 <= rsi_val <= 55
+    rsi_long  = 40 <= rsi_val <= 70
+    rsi_short = 30 <= rsi_val <= 60
 
     btc_long_ok  = btc_bias in ("bull", "neutral") or symbol == "BTCUSDT"
     btc_short_ok = btc_bias in ("bear", "neutral") or symbol == "BTCUSDT"
@@ -920,11 +920,9 @@ def build_signal(
         full_bull and
         (liq_long or bos_l) and
         (bull_eng or pin_bull) and
-        vwap_long and
         adx_ok and
         not choppy and
-        btc_long_ok and
-        rsi_long
+        btc_long_ok
     )
 
     sell_signal = (
@@ -932,11 +930,9 @@ def build_signal(
         full_bear and
         (liq_short or bos_s) and
         (bear_eng or pin_bear) and
-        vwap_short and
         adx_ok and
         not choppy and
-        btc_short_ok and
-        rsi_short
+        btc_short_ok
     )
 
     def blockers_for(

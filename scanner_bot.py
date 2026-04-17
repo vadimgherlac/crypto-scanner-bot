@@ -863,6 +863,15 @@ def build_signal(
     t1h_bear = not t1h_bull
     t15_bear = not t15_bull
 
+    # Per-asset thresholds — must be set before adx_ok and RSI use them
+    is_stock   = asset_type == "stock"
+    min_rr     = STOCK_MIN_RR       if is_stock else CRYPTO_MIN_RR
+    adx_min    = STOCK_ADX_MIN      if is_stock else CRYPTO_ADX_MIN
+    rsi_l_lo, rsi_l_hi = STOCK_RSI_LONG  if is_stock else CRYPTO_RSI_LONG
+    rsi_s_lo, rsi_s_hi = STOCK_RSI_SHORT if is_stock else CRYPTO_RSI_SHORT
+    req_candle = STOCK_REQUIRE_CANDLE if is_stock else CRYPTO_REQUIRE_CANDLE
+    allow_chop = STOCK_ALLOW_CHOPPY   if is_stock else CRYPTO_ALLOW_CHOPPY
+
     full_bull = (t4h_bull and t1h_bull) or (t1h_bull and t15_bull) or (t4h_bull and t15_bull)
     full_bear = (t4h_bear and t1h_bear) or (t1h_bear and t15_bear) or (t4h_bear and t15_bear)
 
@@ -889,15 +898,6 @@ def build_signal(
 
     btc_long_ok  = btc_bias in ("bull", "neutral") or symbol == "BTCUSDT"
     btc_short_ok = btc_bias in ("bear", "neutral") or symbol == "BTCUSDT"
-
-    # Per-asset thresholds
-    is_stock   = asset_type == "stock"
-    min_rr     = STOCK_MIN_RR       if is_stock else CRYPTO_MIN_RR
-    adx_min    = STOCK_ADX_MIN      if is_stock else CRYPTO_ADX_MIN
-    rsi_l_lo, rsi_l_hi = STOCK_RSI_LONG  if is_stock else CRYPTO_RSI_LONG
-    rsi_s_lo, rsi_s_hi = STOCK_RSI_SHORT if is_stock else CRYPTO_RSI_SHORT
-    req_candle = STOCK_REQUIRE_CANDLE if is_stock else CRYPTO_REQUIRE_CANDLE
-    allow_chop = STOCK_ALLOW_CHOPPY   if is_stock else CRYPTO_ALLOW_CHOPPY
 
     W = WEIGHTS
     long_score = 0.0

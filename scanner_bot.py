@@ -1084,6 +1084,8 @@ def build_signal(
 # =========================================================
 # CRYPTO SCANNER
 # =========================================================
+_slow_cache: dict = {}
+
 def scan_crypto(scan_log: list):
     locked, reason = is_locked("crypto")
     if locked:

@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 import sys, os
 os.environ["PYTHONUNBUFFERED"] = "1"
 sys.stdout.reconfigure(line_buffering=True)
@@ -24,7 +23,6 @@ Key changes from V16:
   - Cooldown 90 min after any loss (was 60)
 """
 
-
 import os
 import time
 import csv
@@ -36,18 +34,17 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 def now_ct():
-    """Return current time in US Central (CT) without requiring tzdata."""
+    """Return current time in US Central without requiring tzdata."""
     from datetime import datetime, timedelta
     now_utc = datetime.utcnow()
     year = now_utc.year
-    # DST: second Sunday of March -> first Sunday of November
     march1 = datetime(year, 3, 1)
     first_sun_march = march1 + timedelta(days=(6 - march1.weekday()) % 7)
     cdt_start = first_sun_march + timedelta(weeks=1)
     nov1 = datetime(year, 11, 1)
     cdt_end = nov1 + timedelta(days=(6 - nov1.weekday()) % 7)
     is_cdt = cdt_start <= now_utc.replace(hour=2, minute=0, second=0) < cdt_end
-    offset = 5 if is_cdt else 6  # CDT=UTC-5, CST=UTC-6
+    offset = 5 if is_cdt else 6
     return now_utc - timedelta(hours=offset)
 
 from dotenv import load_dotenv
@@ -95,8 +92,8 @@ COOLDOWN_AFTER_LOSS_MINUTES = 90            # up from 60
 A_PLUS_ONLY_MODE            = False
 
 # -- Coin quality filter ──────────────────────────────────
-MIN_COIN_WINRATE_TO_TRADE   = 35.0          # up from 35
-MIN_TRADES_FOR_COIN_FILTER  = 10             # up from 5
+MIN_COIN_WINRATE_TO_TRADE   = 40.0          # up from 35
+MIN_TRADES_FOR_COIN_FILTER  = 8             # up from 5
 
 # -- Signal score thresholds (CRYPTO) ────────────────────
 CRYPTO_SCORE_A_PLUS = 15
@@ -105,7 +102,7 @@ CRYPTO_MIN_RR       = 1.5
 CRYPTO_ADX_MIN      = 20
 CRYPTO_RSI_LONG     = (40, 70)
 CRYPTO_RSI_SHORT    = (30, 60)
-CRYPTO_REQUIRE_CANDLE = True   # require engulf or pin bar
+CRYPTO_REQUIRE_CANDLE = True
 CRYPTO_ALLOW_CHOPPY   = False
 
 # -- Signal score thresholds (STOCKS) ────────────────────
@@ -115,11 +112,11 @@ STOCK_MIN_RR        = 1.3
 STOCK_ADX_MIN       = 17
 STOCK_RSI_LONG      = (35, 75)
 STOCK_RSI_SHORT     = (25, 65)
-STOCK_REQUIRE_CANDLE = False   # candle pattern optional for stocks
-STOCK_ALLOW_CHOPPY   = True    # stocks can trend through choppy readings
+STOCK_REQUIRE_CANDLE = False
+STOCK_ALLOW_CHOPPY   = True
 
 # -- Diagnostic ──────────────────────────────────────────
-DIAGNOSTIC_EVERY_N_CYCLES = 0   # 0 = disabled (end-of-day report only)
+DIAGNOSTIC_EVERY_N_CYCLES = 0
 
 # -- Watchlists ───────────────────────────────────────────
 STOCK_TICKERS = [
@@ -151,7 +148,7 @@ WEIGHTS = {
 }
 
 # -- Regime thresholds ────────────────────────────────────
-REGIME_ADX_TRENDING = 20
+REGIME_ADX_TRENDING = 22
 REGIME_ADX_RANGING  = 18
 
 # =========================================================
@@ -245,25 +242,31 @@ def get_yf(ticker: str, interval: str, period: str, retries: int = 3) -> pd.Data
 
     for attempt in range(1, retries + 1):
         try:
-            tk = yf.Ticker(ticker)
-            df = tk.history(period=period, interval=interval, auto_adjust=True)
+            df = yf.download(
+                ticker,
+                period=period,
+                interval=interval,
+                auto_adjust=True,
+                progress=False,
+                threads=False
+            )
 
             if df.empty:
                 raise ValueError("Empty dataframe")
 
-            # Normalize to lowercase to match rest of codebase
-            df.columns = [c.lower() for c in df.columns]
-            df.index = pd.to_datetime(df.index)
-            if df.index.tz is not None:
-                df.index = df.index.tz_localize(None)
+            # Fix MultiIndex (important)
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
 
             return df
 
         except Exception as e:
             last_exc = e
             wait = 2 ** attempt
+            print(f"[{ticker}] attempt {attempt}/{retries} failed ({e}), retrying in {wait}s...")
             time.sleep(wait)
 
+    print(f"[{ticker}] FAILED — {last_exc}")
     return pd.DataFrame()
 # =========================================================
 # MARKET REGIME
@@ -450,21 +453,16 @@ def crypto_session() -> str:
     return "LOW"
 
 def stock_market_open() -> bool:
-    # Use UTC and manually account for ET offset to avoid tzdata issues on Railway.
-    # ET = UTC-5 (EST) or UTC-4 (EDT). We check both to be safe — NYSE is open
-    # 9:30–16:00 ET, so we gate at 9:45–15:45 to avoid bad data at open/close edges.
+    from datetime import datetime, timedelta
     now_utc = datetime.utcnow()
-    if now_utc.weekday() >= 5:   # Saturday=5, Sunday=6
+    if now_utc.weekday() >= 5:
         return False
-    # Determine EDT vs EST: EDT runs second Sunday of March through first Sunday of November
     year = now_utc.year
-    # Find second Sunday of March
     march1 = datetime(year, 3, 1)
     first_sun_march = march1 + timedelta(days=(6 - march1.weekday()) % 7)
-    edt_start = first_sun_march + timedelta(weeks=1)   # second Sunday
-    # Find first Sunday of November
+    edt_start = first_sun_march + timedelta(weeks=1)
     nov1 = datetime(year, 11, 1)
-    edt_end = nov1 + timedelta(days=(6 - nov1.weekday()) % 7)  # first Sunday
+    edt_end = nov1 + timedelta(days=(6 - nov1.weekday()) % 7)
     is_edt = edt_start <= now_utc.replace(hour=2, minute=0, second=0) < edt_end
     offset = 4 if is_edt else 5
     now_et = now_utc - timedelta(hours=offset)
@@ -744,33 +742,20 @@ def send_daily_report():
     try:
         today = get_today()
         df    = pd.read_csv(SIGNALS_FILE)
-
-        # --- Signals sent TODAY ---
         today_signals = df[df["timestamp"].astype(str).str.startswith(today)].copy()
+        closed_all    = df[df["status"].isin(["WIN", "LOSS"])].copy()
+        closed_today  = today_signals[today_signals["status"].isin(["WIN", "LOSS"])].copy()
+        open_today    = today_signals[today_signals["status"] == "OPEN"].copy()
 
-        # --- All-time closed trades ---
-        closed_all = df[df["status"].isin(["WIN", "LOSS"])].copy()
-
-        # --- Today's closed trades ---
-        closed_today = today_signals[today_signals["status"].isin(["WIN", "LOSS"])].copy()
-        open_today   = today_signals[today_signals["status"] == "OPEN"].copy()
-
-        # Build today signals list
         signal_lines = []
         for _, row in today_signals.iterrows():
             icon = "✅" if row["status"] == "WIN" else ("❌" if row["status"] == "LOSS" else "⏳")
-            signal_lines.append(
-                f"  {icon} {row['side']} {row['symbol']} "
-                f"@ {row['entry']} | {row['status']} | {row['grade']}"
-            )
+            signal_lines.append(f"  {icon} {row['side']} {row['symbol']} @ {row['entry']} | {row['status']} | {row['grade']}")
         signals_block = "\n".join(signal_lines) if signal_lines else "  No signals today"
 
-        # Today stats
         t_total = len(closed_today)
         t_wins  = (closed_today["status"] == "WIN").sum() if t_total > 0 else 0
         t_wr    = round(t_wins / t_total * 100, 1) if t_total > 0 else 0.0
-
-        # All-time stats
         a_total = len(closed_all)
         a_wins  = (closed_all["status"] == "WIN").sum() if a_total > 0 else 0
         a_wr    = round(a_wins / a_total * 100, 1) if a_total > 0 else 0.0
@@ -780,8 +765,8 @@ def send_daily_report():
             f"{'='*30}\n\n"
             f"📨 Signals Sent Today: {len(today_signals)}\n"
             f"{signals_block}\n\n"
-            f"📅 TODAY  — W:{t_wins} L:{t_total - t_wins} Open:{len(open_today)} | WR:{t_wr}%\n"
-            f"📈 ALL-TIME — W:{a_wins} L:{a_total - a_wins} Total:{a_total} | WR:{a_wr}%"
+            f"📅 TODAY  — W:{t_wins} L:{t_total-t_wins} Open:{len(open_today)} | WR:{t_wr}%\n"
+            f"📈 ALL-TIME — W:{a_wins} L:{a_total-a_wins} Total:{a_total} | WR:{a_wr}%"
         )
         send_telegram(msg)
     except Exception as e:
@@ -863,7 +848,7 @@ def build_signal(
     t1h_bear = not t1h_bull
     t15_bear = not t15_bull
 
-    # Per-asset thresholds — must be set before adx_ok and RSI use them
+    # Per-asset thresholds
     is_stock   = asset_type == "stock"
     min_rr     = STOCK_MIN_RR       if is_stock else CRYPTO_MIN_RR
     adx_min    = STOCK_ADX_MIN      if is_stock else CRYPTO_ADX_MIN
@@ -938,7 +923,7 @@ def build_signal(
         long_score  -= 1
         short_score -= 1
 
-    long_grade  = grade(long_score,  asset_type)
+    long_grade  = grade(long_score, asset_type)
     short_grade = grade(short_score, asset_type)
 
     candle_long  = (bull_eng or pin_bull) if req_candle else (bull_eng or pin_bull or bos_l or liq_long)
@@ -1015,8 +1000,8 @@ def build_signal(
         tp1 = round(entry + 1.5 * risk, 5)
         tp2 = round(entry + 2.5 * risk, 5)
         rr  = calc_rr(entry, stop, tp2)
-        if rr < min_rr:
-
+        if rr < MIN_RR:
+            print(f"{symbol} BUY: R:R {rr} < {MIN_RR}, skipped")
             return
         qty = get_qty(symbol, entry, stop) if asset_type == "crypto" else "N/A"
 
@@ -1059,8 +1044,8 @@ def build_signal(
         tp1 = round(entry - 1.5 * risk, 5)
         tp2 = round(entry - 2.5 * risk, 5)
         rr  = calc_rr(entry, stop, tp2)
-        if rr < min_rr:
-
+        if rr < MIN_RR:
+            print(f"{symbol} SELL: R:R {rr} < {MIN_RR}, skipped")
             return
         qty = get_qty(symbol, entry, stop) if asset_type == "crypto" else "N/A"
 
@@ -1094,15 +1079,11 @@ def build_signal(
                        round(short_score, 1), regime, short_grade, session, rr, setup)
             print(f"✅ {short_grade} SELL: {symbol} score={short_score:.1f} regime={regime} rr={rr}")
 
-    # No signal — intentionally silent (reduce noise)
+    # no signal — silent
 
 # =========================================================
 # CRYPTO SCANNER
 # =========================================================
-# Cache for slow timeframes — only refresh every N minutes
-_slow_cache: dict = {}          # symbol -> {df_1h, df_4h, ts}
-SLOW_CACHE_MINUTES = 10         # 1h and 4h data refreshed every 10 min
-
 def scan_crypto(scan_log: list):
     locked, reason = is_locked("crypto")
     if locked:
@@ -1111,59 +1092,48 @@ def scan_crypto(scan_log: list):
     session  = crypto_session()
     btc_bias = get_btc_bias()
 
-    now = now_ct()
 
     print(f"  crypto: scanning {len(CRYPTO_SYMBOLS)} symbols...", flush=True)
     for symbol in CRYPTO_SYMBOLS:
         try:
             if is_blacklisted(symbol):
                 continue
-
-            # Always fetch 15m (fast timeframe)
             df_15m = get_bybit_klines(symbol, "15", 300)
             time.sleep(0.5)
-
-            # Fetch 1h and 4h from cache if fresh, else re-fetch
             cached = _slow_cache.get(symbol)
             cache_stale = (
                 cached is None or
-                (now - cached["ts"]).total_seconds() > SLOW_CACHE_MINUTES * 60
+                (now_ct() - cached["ts"]).total_seconds() > 10 * 60
             )
-
             if cache_stale:
                 df_1h = get_bybit_klines(symbol, "60",  200)
                 time.sleep(0.5)
                 df_4h = get_bybit_klines(symbol, "240", 200)
                 time.sleep(0.5)
                 if df_1h is not None and df_4h is not None:
-                    _slow_cache[symbol] = {"df_1h": df_1h, "df_4h": df_4h, "ts": now}
+                    _slow_cache[symbol] = {"df_1h": df_1h, "df_4h": df_4h, "ts": now_ct()}
             else:
                 df_1h = cached["df_1h"]
                 df_4h = cached["df_4h"]
-
             if any(d is None or len(d) < 80 for d in [df_15m, df_1h, df_4h]):
                 continue
-
             build_signal(symbol, "crypto", df_15m, df_1h, df_4h, session, btc_bias, scan_log)
         except Exception as e:
             print(f"Error {symbol}: {e}")
+    print("  crypto: done", flush=True)
 
 # =========================================================
 # STOCK SCANNER
 # =========================================================
 def yf_to_std(df_raw: pd.DataFrame) -> pd.DataFrame:
-    """Convert yfinance dataframe to standard format used by bot.
-    Handles both Title Case (old yf.download) and lowercase (yf.Ticker.history) columns."""
-    # Normalize to lowercase so we handle both column styles
-    df = df_raw.copy()
-    df.columns = [c.lower() for c in df.columns]
+    """Convert yfinance dataframe to standard format used by bot"""
     return pd.DataFrame({
-        "timestamp": df.index,
-        "open":   df["open"].astype(float).values,
-        "high":   df["high"].astype(float).values,
-        "low":    df["low"].astype(float).values,
-        "close":  df["close"].astype(float).values,
-        "volume": df["volume"].astype(float).values,
+        "timestamp": df_raw.index,
+        "open": df_raw["Open"].astype(float).values,
+        "high": df_raw["High"].astype(float).values,
+        "low": df_raw["Low"].astype(float).values,
+        "close": df_raw["Close"].astype(float).values,
+        "volume": df_raw["Volume"].astype(float).values,
     }).dropna().reset_index(drop=True)
 
 def scan_stocks(scan_log: list):
@@ -1182,9 +1152,9 @@ def scan_stocks(scan_log: list):
             df_1h  = yf_to_std(raw_1h)
             raw_4h = (
                 raw_1h.resample("4h").agg({
-                    "open": "first", "high": "max",
-                    "low": "min",    "close": "last",
-                    "volume": "sum",
+                    "Open": "first", "High": "max",
+                    "Low": "min",   "Close": "last",
+                    "Volume": "sum",
                 }).dropna()
             )
             df_4h = yf_to_std(raw_4h)
@@ -1222,21 +1192,19 @@ def main():
     while True:
         cycle_count += 1
         market_status = 'OPEN' if stock_market_open() else 'CLOSED'
-        print(f'[cycle {cycle_count}] {now_ct().strftime("%H:%M:%S")} CT | stocks={market_status} | crypto=SCANNING', flush=True)
+        print(f"[cycle {cycle_count}] {now_ct().strftime("%H:%M:%S")} CT | stocks={market_status} | crypto=SCANNING", flush=True)
+        pass
         scan_log = []
 
         try:
             update_outcomes()
 
             if stock_market_open():
-                print("  stocks: scanning...", flush=True)
                 scan_stocks(scan_log)
-                print("  stocks: done", flush=True)
             else:
-                pass  # market closed
+                pass
 
             scan_crypto(scan_log)
-            print(f"  crypto: done", flush=True)
 
             now = now_ct()
             if now.hour == 20 and now.minute < 2 and last_report_day != now.date():

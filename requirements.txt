@@ -1,6 +1,8 @@
-requests
-pandas
-yfinance
-python-dotenv
 pybit
-tzdata
+yfinance
+pandas
+numpy
+requests
+psycopg2-binary
+python-dotenv
+ta

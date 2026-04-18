@@ -1192,7 +1192,7 @@ def main():
     while True:
         cycle_count += 1
         market_status = 'OPEN' if stock_market_open() else 'CLOSED'
-        print(f"[cycle {cycle_count}] {now_ct().strftime("%H:%M:%S")} CT | stocks={market_status} | crypto=SCANNING", flush=True)
+        print(f"[cycle {cycle_count}] {now_ct().strftime('%H:%M:%S')} CT | stocks={market_status} | crypto=SCANNING", flush=True)
         pass
         scan_log = []
 

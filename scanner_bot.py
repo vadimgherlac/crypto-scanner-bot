@@ -994,8 +994,8 @@ def build_signal(
         tp1 = round(entry + 1.5 * risk, 5)
         tp2 = round(entry + 2.5 * risk, 5)
         rr  = calc_rr(entry, stop, tp2)
-        if rr < MIN_RR:
-            print(f"{symbol} BUY: R:R {rr} < {MIN_RR}, skipped")
+        if rr < min_rr:
+            print(f"{symbol} BUY: R:R {rr} < {min_rr}, skipped")
             return
         qty = get_qty(symbol, entry, stop) if asset_type == "crypto" else "N/A"
 
@@ -1038,8 +1038,8 @@ def build_signal(
         tp1 = round(entry - 1.5 * risk, 5)
         tp2 = round(entry - 2.5 * risk, 5)
         rr  = calc_rr(entry, stop, tp2)
-        if rr < MIN_RR:
-            print(f"{symbol} SELL: R:R {rr} < {MIN_RR}, skipped")
+        if rr < min_rr:
+            print(f"{symbol} SELL: R:R {rr} < {min_rr}, skipped")
             return
         qty = get_qty(symbol, entry, stop) if asset_type == "crypto" else "N/A"
 

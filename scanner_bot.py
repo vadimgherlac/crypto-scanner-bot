@@ -96,20 +96,20 @@ MIN_COIN_WINRATE_TO_TRADE   = 40.0          # up from 35
 MIN_TRADES_FOR_COIN_FILTER  = 8             # up from 5
 
 # -- Signal score thresholds (CRYPTO) ────────────────────
-CRYPTO_SCORE_A_PLUS = 13
-CRYPTO_SCORE_A      = 8
+CRYPTO_SCORE_A_PLUS = 14
+CRYPTO_SCORE_A      = 10
 CRYPTO_MIN_RR       = 1.3
-CRYPTO_ADX_MIN      = 18
+CRYPTO_ADX_MIN      = 20
 CRYPTO_RSI_LONG     = (35, 75)
 CRYPTO_RSI_SHORT    = (25, 65)
 CRYPTO_REQUIRE_CANDLE = False
 CRYPTO_ALLOW_CHOPPY   = True
 
 # -- Signal score thresholds (STOCKS) ────────────────────
-STOCK_SCORE_A_PLUS  = 10
-STOCK_SCORE_A       = 6
+STOCK_SCORE_A_PLUS  = 12
+STOCK_SCORE_A       = 8
 STOCK_MIN_RR        = 1.2
-STOCK_ADX_MIN       = 15
+STOCK_ADX_MIN       = 18
 STOCK_RSI_LONG      = (30, 80)
 STOCK_RSI_SHORT     = (20, 70)
 STOCK_REQUIRE_CANDLE = False
@@ -928,8 +928,7 @@ def build_signal(
 
     long_grade  = grade(long_score, asset_type)
     short_grade = grade(short_score, asset_type)
-    if asset_type == "stock":
-        print(f"  {symbol} L={long_score:.1f}({long_grade}) S={short_score:.1f}({short_grade}) adx={adx_val:.0f} bull={full_bull} bear={full_bear}", flush=True)
+
 
     candle_long  = (bull_eng or pin_bull) if req_candle else (bull_eng or pin_bull or bos_l or liq_long)
     candle_short = (bear_eng or pin_bear) if req_candle else (bear_eng or pin_bear or bos_s or liq_short)
@@ -990,6 +989,11 @@ def build_signal(
 
     ts = now_ct().strftime("%Y-%m-%d %H:%M:%S")
 
+    # Per-symbol cooldown — skip if signaled recently
+    last_sig = _signal_cooldown.get(symbol)
+    if last_sig and (now_ct() - last_sig).total_seconds() < SIGNAL_COOLDOWN_MINUTES * 60:
+        return
+
     if buy_signal and not has_open_signal(symbol):
         entry = price
         stop  = smart_stop_long(df_15m, atr_val)
@@ -1028,6 +1032,7 @@ def build_signal(
                 + (f"\n──────────────────────\n🚀 BYBIT:\nTRADE {symbol} BUY {qty} SL:{stop} TP:{tp2}" if asset_type == "crypto" else "")
             )
             send_telegram(msg)
+            _signal_cooldown[symbol] = now_ct()
             log_signal(ts, symbol, asset_type, "BUY",
                        entry, stop, tp1, tp2,
                        round(rsi_val, 2), round(vwap, 5), round(atr_val, 5), round(adx_val, 1),
@@ -1072,6 +1077,7 @@ def build_signal(
                 + (f"\n──────────────────────\n🚀 BYBIT:\nTRADE {symbol} SELL {qty} SL:{stop} TP:{tp2}" if asset_type == "crypto" else "")
             )
             send_telegram(msg)
+            _signal_cooldown[symbol] = now_ct()
             log_signal(ts, symbol, asset_type, "SELL",
                        entry, stop, tp1, tp2,
                        round(rsi_val, 2), round(vwap, 5), round(atr_val, 5), round(adx_val, 1),
@@ -1084,6 +1090,8 @@ def build_signal(
 # CRYPTO SCANNER
 # =========================================================
 _slow_cache: dict = {}
+_signal_cooldown: dict = {}  # symbol -> datetime of last signal
+SIGNAL_COOLDOWN_MINUTES = 60  # don't re-signal same symbol within 60 min
 
 def scan_crypto(scan_log: list):
     locked, reason = is_locked("crypto")

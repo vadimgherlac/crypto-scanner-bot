@@ -96,22 +96,22 @@ MIN_COIN_WINRATE_TO_TRADE   = 40.0          # up from 35
 MIN_TRADES_FOR_COIN_FILTER  = 8             # up from 5
 
 # -- Signal score thresholds (CRYPTO) ────────────────────
-CRYPTO_SCORE_A_PLUS = 15
-CRYPTO_SCORE_A      = 10
-CRYPTO_MIN_RR       = 1.5
-CRYPTO_ADX_MIN      = 20
-CRYPTO_RSI_LONG     = (40, 70)
-CRYPTO_RSI_SHORT    = (30, 60)
-CRYPTO_REQUIRE_CANDLE = True
-CRYPTO_ALLOW_CHOPPY   = False
+CRYPTO_SCORE_A_PLUS = 13
+CRYPTO_SCORE_A      = 8
+CRYPTO_MIN_RR       = 1.3
+CRYPTO_ADX_MIN      = 18
+CRYPTO_RSI_LONG     = (35, 75)
+CRYPTO_RSI_SHORT    = (25, 65)
+CRYPTO_REQUIRE_CANDLE = False
+CRYPTO_ALLOW_CHOPPY   = True
 
 # -- Signal score thresholds (STOCKS) ────────────────────
-STOCK_SCORE_A_PLUS  = 12
-STOCK_SCORE_A       = 8
-STOCK_MIN_RR        = 1.3
-STOCK_ADX_MIN       = 17
-STOCK_RSI_LONG      = (35, 75)
-STOCK_RSI_SHORT     = (25, 65)
+STOCK_SCORE_A_PLUS  = 10
+STOCK_SCORE_A       = 6
+STOCK_MIN_RR        = 1.2
+STOCK_ADX_MIN       = 15
+STOCK_RSI_LONG      = (30, 80)
+STOCK_RSI_SHORT     = (20, 70)
 STOCK_REQUIRE_CANDLE = False
 STOCK_ALLOW_CHOPPY   = True
 
@@ -881,8 +881,8 @@ def build_signal(
     rsi_long  = rsi_l_lo <= rsi_val <= rsi_l_hi
     rsi_short = rsi_s_lo <= rsi_val <= rsi_s_hi
 
-    btc_long_ok  = btc_bias in ("bull", "neutral") or symbol == "BTCUSDT"
-    btc_short_ok = btc_bias in ("bear", "neutral") or symbol == "BTCUSDT"
+    btc_long_ok  = True  # BTC bias scores but no longer hard-blocks
+    btc_short_ok = True  # BTC bias scores but no longer hard-blocks
 
     W = WEIGHTS
     long_score = 0.0
@@ -932,20 +932,14 @@ def build_signal(
     buy_signal = (
         long_grade in (["A+"] if A_PLUS_ONLY_MODE else ["A+", "A"]) and
         full_bull and
-        (liq_long or bos_l) and
-        candle_long and
         adx_ok and
-        (allow_chop or not choppy) and
         btc_long_ok
     )
 
     sell_signal = (
         short_grade in (["A+"] if A_PLUS_ONLY_MODE else ["A+", "A"]) and
         full_bear and
-        (liq_short or bos_s) and
-        candle_short and
         adx_ok and
-        (allow_chop or not choppy) and
         btc_short_ok
     )
 

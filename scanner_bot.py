@@ -251,12 +251,15 @@ def get_yf(ticker: str, interval: str, period: str, retries: int = 3) -> pd.Data
                 threads=False
             )
 
-            if df.empty:
-                raise ValueError("Empty dataframe")
-
-            # Fix MultiIndex (important)
+            # Fix MultiIndex BEFORE empty check — newer yfinance always returns MultiIndex
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
+
+            # Drop any all-NaN rows
+            df = df.dropna(how="all")
+
+            if df.empty or len(df) < 5:
+                raise ValueError(f"Empty dataframe ({len(df)} rows)")
 
             return df
 
@@ -1125,13 +1128,19 @@ def scan_crypto(scan_log: list):
 # =========================================================
 def yf_to_std(df_raw: pd.DataFrame) -> pd.DataFrame:
     """Convert yfinance dataframe to standard format used by bot"""
+    df = df_raw.copy()
+    # Flatten MultiIndex columns if present
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    # Normalize column names
+    df.columns = [c.capitalize() for c in df.columns]
     return pd.DataFrame({
-        "timestamp": df_raw.index,
-        "open": df_raw["Open"].astype(float).values,
-        "high": df_raw["High"].astype(float).values,
-        "low": df_raw["Low"].astype(float).values,
-        "close": df_raw["Close"].astype(float).values,
-        "volume": df_raw["Volume"].astype(float).values,
+        "timestamp": df.index,
+        "open":   df["Open"].astype(float).values,
+        "high":   df["High"].astype(float).values,
+        "low":    df["Low"].astype(float).values,
+        "close":  df["Close"].astype(float).values,
+        "volume": df["Volume"].astype(float).values,
     }).dropna().reset_index(drop=True)
 
 def scan_stocks(scan_log: list):
@@ -1143,8 +1152,8 @@ def scan_stocks(scan_log: list):
     print(f"  stocks: scanning {len(STOCK_TICKERS)} tickers...", flush=True)
     for ticker in STOCK_TICKERS:
         try:
-            raw_15m = get_yf(ticker, "15m", "5d")
-            raw_1h  = get_yf(ticker, "60m", "30d")
+            raw_15m = get_yf(ticker, "15m", "7d")   # 7d covers weekends/holidays
+            raw_1h  = get_yf(ticker, "60m", "60d")  # 60d for enough 1h bars
             if raw_15m.empty or raw_1h.empty:
                 print(f"  {ticker}: empty data (15m={len(raw_15m)} 1h={len(raw_1h)})", flush=True)
                 continue

@@ -925,6 +925,8 @@ def build_signal(
 
     long_grade  = grade(long_score, asset_type)
     short_grade = grade(short_score, asset_type)
+    if asset_type == "stock":
+        print(f"  {symbol} L={long_score:.1f}({long_grade}) S={short_score:.1f}({short_grade}) adx={adx_val:.0f} bull={full_bull} bear={full_bear}", flush=True)
 
     candle_long  = (bull_eng or pin_bull) if req_candle else (bull_eng or pin_bull or bos_l or liq_long)
     candle_short = (bear_eng or pin_bear) if req_candle else (bear_eng or pin_bear or bos_s or liq_short)

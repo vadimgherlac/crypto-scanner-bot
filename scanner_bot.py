@@ -1137,13 +1137,16 @@ def yf_to_std(df_raw: pd.DataFrame) -> pd.DataFrame:
 def scan_stocks(scan_log: list):
     locked, reason = is_locked("stock")
     if locked:
+        print("  stocks: LOCKED", flush=True)
         return
 
+    print(f"  stocks: scanning {len(STOCK_TICKERS)} tickers...", flush=True)
     for ticker in STOCK_TICKERS:
         try:
-            raw_15m  = get_yf(ticker, "15m", "5d")
-            raw_1h   = get_yf(ticker, "60m", "30d")
+            raw_15m = get_yf(ticker, "15m", "5d")
+            raw_1h  = get_yf(ticker, "60m", "30d")
             if raw_15m.empty or raw_1h.empty:
+                print(f"  {ticker}: empty data (15m={len(raw_15m)} 1h={len(raw_1h)})", flush=True)
                 continue
 
             df_15m = yf_to_std(raw_15m)
@@ -1158,11 +1161,13 @@ def scan_stocks(scan_log: list):
             df_4h = yf_to_std(raw_4h)
 
             if any(len(d) < 40 for d in [df_15m, df_1h, df_4h]):
+                print(f"  {ticker}: not enough rows (15m={len(df_15m)} 1h={len(df_1h)} 4h={len(df_4h)})", flush=True)
                 continue
 
             build_signal(ticker, "stock", df_15m, df_1h, df_4h, "STOCK", "neutral", scan_log)
         except Exception as e:
-            print(f"Stock error {ticker}: {e}")
+            print(f"  Stock error {ticker}: {e}", flush=True)
+    print("  stocks: done", flush=True)
 
 # =========================================================
 # MAIN LOOP

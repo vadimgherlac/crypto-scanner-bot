@@ -97,7 +97,7 @@ MIN_TRADES_FOR_COIN_FILTER  = 8             # up from 5
 
 # -- Signal score thresholds (CRYPTO) ────────────────────
 CRYPTO_SCORE_A_PLUS = 14
-CRYPTO_SCORE_A      = 10
+CRYPTO_SCORE_A      = 99
 CRYPTO_MIN_RR       = 1.3
 CRYPTO_ADX_MIN      = 20
 CRYPTO_RSI_LONG     = (35, 75)
@@ -936,6 +936,8 @@ def build_signal(
     buy_signal = (
         long_grade in (["A+"] if A_PLUS_ONLY_MODE else ["A+", "A"]) and
         full_bull and
+        (liq_long or bos_l) and
+        regime == "TRENDING" and
         adx_ok and
         btc_long_ok
     )
@@ -943,6 +945,8 @@ def build_signal(
     sell_signal = (
         short_grade in (["A+"] if A_PLUS_ONLY_MODE else ["A+", "A"]) and
         full_bear and
+        (liq_short or bos_s) and
+        regime == "TRENDING" and
         adx_ok and
         btc_short_ok
     )
